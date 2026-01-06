@@ -213,8 +213,15 @@ def build_payload_tarball(dest: Path) -> None:
     ]
     monitor_script = ROOT / "scripts" / "ccxt_monitor_api.py"
     replay_script = ROOT / "scripts" / "ai_iteration_replay.py"
+    trade_etl_script = ROOT / "scripts" / "etl_prepare_trade_data.py"
 
-    for path in [*strategy_files, *config_files, monitor_script, replay_script]:
+    for path in [
+        *strategy_files,
+        *config_files,
+        monitor_script,
+        replay_script,
+        trade_etl_script,
+    ]:
         if not path.exists():
             raise RuntimeError(f"Missing required file: {path}")
 
@@ -226,6 +233,7 @@ def build_payload_tarball(dest: Path) -> None:
             tar.add(config_file, arcname=f"user_data/{config_file.name}")
         tar.add(monitor_script, arcname="scripts/ccxt_monitor_api.py")
         tar.add(replay_script, arcname="scripts/ai_iteration_replay.py")
+        tar.add(trade_etl_script, arcname="scripts/etl_prepare_trade_data.py")
 
 
 def write_remote_file(
@@ -319,6 +327,8 @@ def main() -> None:  # noqa: C901
         "MONITOR_FEEDBACK_FILES",
         "user_data/ai_iteration_feedback_main.jsonl,user_data/ai_iteration_feedback_alt.jsonl",
     )
+    monitor_whale_report = env.get("MONITOR_WHALE_FLOW_REPORT", "")
+    monitor_retail_report = env.get("MONITOR_RETAIL_FOMO_REPORT", "")
     cornna_domain = env.get("CORNNA_DOMAIN", "cornna.dpdns.org")
     cornna_web_root = env.get("CORNNA_WEB_ROOT", "/var/www/cornna")
 
@@ -458,6 +468,14 @@ def main() -> None:  # noqa: C901
                 if monitor_api_password:
                     monitor_env.append(
                         f"Environment=MONITOR_API_PASSWORD={monitor_api_password}"
+                    )
+                if monitor_whale_report:
+                    monitor_env.append(
+                        f"Environment=MONITOR_WHALE_FLOW_REPORT={monitor_whale_report}"
+                    )
+                if monitor_retail_report:
+                    monitor_env.append(
+                        f"Environment=MONITOR_RETAIL_FOMO_REPORT={monitor_retail_report}"
                     )
                 monitor_service = "\n".join(
                     [

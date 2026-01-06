@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Iterable
@@ -220,11 +221,46 @@ def _cached_market_metrics() -> tuple[dict[str, Any], str | None]:
     return _MARKET_CACHE["data"], _MARKET_CACHE["error"]
 
 
+def _load_etl_report() -> dict[str, Any] | None:
+    report_path = os.getenv("MONITOR_ETL_REPORT", "").strip()
+    if not report_path:
+        return None
+    path = Path(report_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_json_report(env_var: str) -> dict[str, Any] | None:
+    report_path = os.getenv(env_var, "").strip()
+    if not report_path:
+        return None
+    path = Path(report_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 @app.get("/api/monitor")
 def monitor() -> JSONResponse:
     refresh_window = int(os.getenv("MONITOR_REFRESH", "15"))
     stats = _load_iteration_stats()
     market_data, market_error = _cached_market_metrics()
+    etl_report = _load_etl_report()
+    whale_flow = _load_json_report("MONITOR_WHALE_FLOW_REPORT")
+    retail_fomo = _load_json_report("MONITOR_RETAIL_FOMO_REPORT")
     trend_bias = float(market_data.get("trend_bias", 0.0) or 0.0)
     momentum = float(market_data.get("momentum", 0.0) or 0.0)
     volatility = float(market_data.get("volatility", 0.0) or 0.0)
@@ -254,6 +290,9 @@ def monitor() -> JSONResponse:
         "timeframe": market_data.get("timeframe"),
         "market_updated_at": market_data.get("updated_at"),
         "market_error": market_error,
+        "etl_summary": etl_report,
+        "whale_flow": whale_flow,
+        "retail_fomo": retail_fomo,
     }
     return JSONResponse(payload)
 
