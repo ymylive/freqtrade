@@ -6,7 +6,7 @@
     <title>Cornna Quant Console</title>
     <meta
       name="description"
-      content="Cornna Quant Console - ValueScan intelligence with AI-tuned execution."
+      content="Cornna Quant Console - CCXT market intelligence with AI-tuned execution."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -42,15 +42,15 @@
       <section class="hero">
         <div class="hero-left">
           <p class="eyebrow" data-i18n="hero_eyebrow">
-            ValueScan Intelligence / AI-Tuned Execution
+            CCXT Market Intelligence / AI-Tuned Execution
           </p>
           <h1>
             <span data-i18n="hero_title_a">Quant signals shaped by live flow,</span>
             <span class="accent" data-i18n="hero_title_b">calibrated in real time.</span>
           </h1>
           <p class="lead" data-i18n="hero_lead">
-            Cornna distills ValueScan inflows, sentiment, and whale activity into
-            a compact decision layer. No clutter, only signals that matter.
+            Cornna distills CCXT market data, momentum, and volatility into a compact
+            decision layer. No clutter, only signals that matter.
           </p>
           <div class="hero-actions">
             <button class="cta solid" data-i18n="cta_console">Open Console</button>
@@ -68,19 +68,19 @@
           </div>
           <div class="metric-stack">
             <div class="metric-card">
-              <p data-i18n="metric_flow_bias">Flow Bias</p>
-              <h3 data-metric="flow_bias">+0.62</h3>
-              <span data-i18n="metric_flow_hint">Net inflow 24h</span>
+              <p data-i18n="metric_flow_bias">Trend Bias</p>
+              <h3 data-metric="trend_bias">+0.62</h3>
+              <span data-i18n="metric_flow_hint">EMA spread</span>
             </div>
             <div class="metric-card">
-              <p data-i18n="metric_whale_pressure">Whale Pressure</p>
-              <h3 data-metric="whale_pressure">76%</h3>
-              <span data-i18n="metric_whale_hint">Long leaning</span>
+              <p data-i18n="metric_whale_pressure">Momentum</p>
+              <h3 data-metric="momentum">0.32%</h3>
+              <span data-i18n="metric_whale_hint">1h change</span>
             </div>
             <div class="metric-card">
-              <p data-i18n="metric_sentiment">Sentiment</p>
-              <h3 data-metric="sentiment">58</h3>
-              <span data-i18n="metric_sentiment_hint">AI bullish ratio</span>
+              <p data-i18n="metric_sentiment">Volatility</p>
+              <h3 data-metric="volatility">1.8%</h3>
+              <span data-i18n="metric_sentiment_hint">ATR percent</span>
             </div>
           </div>
         </div>
@@ -103,17 +103,17 @@
         <article class="panel">
           <h2 data-i18n="panel_exec_title">Execution Logic</h2>
           <p data-i18n="panel_exec_body">
-            Simple decision tree. Real-time ValueScan data only. No historic
+            Simple decision tree. Real-time CCXT data only. No historic
             backtest assumptions.
           </p>
           <div class="mini-list">
             <div>
               <strong data-i18n="exec_entry">Entry</strong>
-              <span data-i18n="exec_entry_desc">Signal strength + flow lift</span>
+              <span data-i18n="exec_entry_desc">Trend + momentum alignment</span>
             </div>
             <div>
               <strong data-i18n="exec_exit">Exit</strong>
-              <span data-i18n="exec_exit_desc">Flow fade + sentiment reversal</span>
+              <span data-i18n="exec_exit_desc">Momentum fade + trend flip</span>
             </div>
             <div>
               <strong data-i18n="exec_risk">Risk</strong>
@@ -143,7 +143,7 @@
           <div class="step">
             <span>01</span>
             <h3 data-i18n="pipeline_ingest_title">Ingest</h3>
-            <p data-i18n="pipeline_ingest_body">ValueScan flows, whale heat, AI ratios.</p>
+          <p data-i18n="pipeline_ingest_body">CCXT OHLCV, order flow, volatility cues.</p>
           </div>
           <div class="step">
             <span>02</span>
@@ -210,8 +210,8 @@
         <div class="insight-content">
           <h2 data-i18n="insight_title">Market Insight</h2>
           <p data-i18n="insight_body">
-            A single view of inflow momentum, sentiment delta, and exchange net
-            flow. Keep the surface area minimal, stay in control.
+            A single view of price momentum, volatility drift, and order flow.
+            Keep the surface area minimal, stay in control.
           </p>
           <button class="cta outline" data-i18n="cta_snapshot">Download Snapshot</button>
         </div>
@@ -219,22 +219,22 @@
           <div class="board-row">
             <span>BTC</span>
             <span class="up">+4.1%</span>
-            <span data-i18n="netflow_btc">Net Flow +128M</span>
+            <span data-i18n="netflow_btc">1h Change +4.1%</span>
           </div>
           <div class="board-row">
             <span>ETH</span>
             <span class="up">+3.3%</span>
-            <span data-i18n="netflow_eth">Net Flow +84M</span>
+            <span data-i18n="netflow_eth">1h Change +3.3%</span>
           </div>
           <div class="board-row">
             <span>SOL</span>
             <span class="down">-1.2%</span>
-            <span data-i18n="netflow_sol">Net Flow -22M</span>
+            <span data-i18n="netflow_sol">1h Change -1.2%</span>
           </div>
           <div class="board-row">
             <span>ARB</span>
             <span class="up">+2.6%</span>
-            <span data-i18n="netflow_arb">Net Flow +9M</span>
+            <span data-i18n="netflow_arb">1h Change +2.6%</span>
           </div>
         </div>
       </section>
@@ -243,7 +243,7 @@
     <footer class="footer" id="contact">
       <div>
         <h3 data-i18n="footer_title">Cornna Quant Console</h3>
-        <p data-i18n="footer_body">Signal clarity for live ValueScan intelligence.</p>
+        <p data-i18n="footer_body">Signal clarity for live CCXT market intelligence.</p>
       </div>
       <div class="footer-links">
         <a href="mailto:ops@cornna.dpdns.org">ops@cornna.dpdns.org</a>

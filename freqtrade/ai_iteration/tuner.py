@@ -8,13 +8,13 @@ from typing import Any
 
 
 FEATURE_KEYS = (
-    "signal_strength",
-    "bullish_ratio",
-    "bearish_ratio",
-    "total_inflow_1h",
-    "total_inflow_4h",
-    "total_inflow_24h",
-    "exchange_net_flow",
+    "rsi",
+    "macd_hist",
+    "ema_diff",
+    "atr_pct",
+    "volume_zscore",
+    "price_change_1h",
+    "price_change_4h",
 )
 DEFAULT_SEGMENT = "default"
 
@@ -36,7 +36,7 @@ def _empty_segment() -> dict[str, Any]:
     return {"long": _empty_stats(), "short": _empty_stats()}
 
 
-class ValueScanFeedbackStore:
+class AiFeedbackStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
@@ -48,7 +48,7 @@ class ValueScanFeedbackStore:
             handle.write("\n")
 
 
-class ValueScanAITuner:
+class AiIterationTuner:
     def __init__(
         self,
         state_path: Path,
@@ -89,29 +89,29 @@ class ValueScanAITuner:
         long_stats = segment_state["long"]
         short_stats = segment_state["short"]
 
-        buy_signal = self._derive_threshold(long_stats, "signal_strength", prefer_higher=True)
-        if buy_signal is not None and "buy_signal_strength" in bounds:
-            thresholds["buy_signal_strength"] = _clamp(
-                buy_signal, *bounds["buy_signal_strength"]
-            )
+        rsi_long = self._derive_threshold(long_stats, "rsi", prefer_higher=True)
+        if rsi_long is not None and "rsi_long" in bounds:
+            thresholds["rsi_long"] = _clamp(rsi_long, *bounds["rsi_long"])
 
-        sell_signal = self._derive_threshold(short_stats, "signal_strength", prefer_higher=False)
-        if sell_signal is not None and "sell_signal_strength" in bounds:
-            thresholds["sell_signal_strength"] = _clamp(
-                sell_signal, *bounds["sell_signal_strength"]
-            )
+        rsi_short = self._derive_threshold(short_stats, "rsi", prefer_higher=False)
+        if rsi_short is not None and "rsi_short" in bounds:
+            thresholds["rsi_short"] = _clamp(rsi_short, *bounds["rsi_short"])
 
-        bullish_ratio = self._derive_threshold(long_stats, "bullish_ratio", prefer_higher=True)
-        if bullish_ratio is not None and "bullish_ratio_threshold" in bounds:
-            thresholds["bullish_ratio_threshold"] = _clamp(
-                bullish_ratio, *bounds["bullish_ratio_threshold"]
-            )
+        macd_hist = self._derive_threshold(long_stats, "macd_hist", prefer_higher=True)
+        if macd_hist is not None and "macd_hist" in bounds:
+            thresholds["macd_hist"] = _clamp(macd_hist, *bounds["macd_hist"])
 
-        bearish_ratio = self._derive_threshold(short_stats, "bearish_ratio", prefer_higher=True)
-        if bearish_ratio is not None and "bearish_ratio_threshold" in bounds:
-            thresholds["bearish_ratio_threshold"] = _clamp(
-                bearish_ratio, *bounds["bearish_ratio_threshold"]
-            )
+        ema_diff = self._derive_threshold(long_stats, "ema_diff", prefer_higher=True)
+        if ema_diff is not None and "ema_diff" in bounds:
+            thresholds["ema_diff"] = _clamp(ema_diff, *bounds["ema_diff"])
+
+        atr_pct = self._derive_threshold(long_stats, "atr_pct", prefer_higher=True)
+        if atr_pct is not None and "atr_pct" in bounds:
+            thresholds["atr_pct"] = _clamp(atr_pct, *bounds["atr_pct"])
+
+        volume_zscore = self._derive_threshold(long_stats, "volume_zscore", prefer_higher=True)
+        if volume_zscore is not None and "volume_zscore" in bounds:
+            thresholds["volume_zscore"] = _clamp(volume_zscore, *bounds["volume_zscore"])
 
         return thresholds
 
@@ -182,38 +182,31 @@ class ValueScanAITuner:
     @staticmethod
     def _default_state() -> dict[str, Any]:
         return {
-            "version": 2,
+            "version": 1,
             "updated_at": None,
             "segments": {DEFAULT_SEGMENT: _empty_segment()},
         }
 
     @staticmethod
     def _normalize_state(data: Mapping[str, Any]) -> dict[str, Any]:
-        raw_version = data.get("version", 1)
-        if "segments" in data:
-            segments = data.get("segments") or {}
-        else:
-            legacy_long = data.get("long") or _empty_stats()
-            legacy_short = data.get("short") or _empty_stats()
-            segments = {DEFAULT_SEGMENT: {"long": legacy_long, "short": legacy_short}}
-
+        raw_segments = data.get("segments")
+        segments: dict[str, Any] = raw_segments if isinstance(raw_segments, dict) else {}
         normalized_segments: dict[str, Any] = {}
-        if isinstance(segments, dict):
-            for key, segment in segments.items():
-                if not isinstance(segment, dict):
-                    normalized_segments[key] = _empty_segment()
-                    continue
-                long_raw = segment.get("long")
-                long_stats = long_raw if isinstance(long_raw, dict) else _empty_stats()
-                short_raw = segment.get("short")
-                short_stats = short_raw if isinstance(short_raw, dict) else _empty_stats()
-                normalized_segments[str(key)] = {"long": long_stats, "short": short_stats}
+        for key, segment in segments.items():
+            if not isinstance(segment, dict):
+                normalized_segments[key] = _empty_segment()
+                continue
+            long_raw = segment.get("long")
+            short_raw = segment.get("short")
+            long_stats = long_raw if isinstance(long_raw, dict) else _empty_stats()
+            short_stats = short_raw if isinstance(short_raw, dict) else _empty_stats()
+            normalized_segments[str(key)] = {"long": long_stats, "short": short_stats}
 
         segments_state: dict[str, Any] = normalized_segments or {
             DEFAULT_SEGMENT: _empty_segment()
         }
         state = {
-            "version": 2 if raw_version != 2 else raw_version,
+            "version": 1,
             "updated_at": data.get("updated_at"),
             "segments": segments_state,
         }

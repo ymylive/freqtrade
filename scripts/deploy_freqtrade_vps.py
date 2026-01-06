@@ -128,7 +128,7 @@ def discover_ai_iteration_paths(client: paramiko.SSHClient, deploy_dir: str) -> 
         if not name or not name.endswith(".py"):
             continue
         lowered = name.lower()
-        if any(token in lowered for token in ("ai", "iteration")) or name.startswith("ValueScan"):
+        if any(token in lowered for token in ("ai", "iteration", "valuescan")):
             ai_paths.append(f"user_data/strategies/{name}")
 
     user_data_dir = f"{deploy_dir}/user_data"
@@ -138,13 +138,15 @@ def discover_ai_iteration_paths(client: paramiko.SSHClient, deploy_dir: str) -> 
         listing = ""
     for line in listing.splitlines():
         name = line.strip()
-        if not name or not name.startswith("valuescan"):
+        if not name or "valuescan" not in name.lower():
             continue
         lowered = name.lower()
         if "localstorage" in lowered:
             continue
         if any(token in lowered for token in ("tuning", "feedback", "iteration", "ai")):
             ai_paths.append(f"user_data/{name}")
+
+    ai_paths.append("freqtrade/valuescan_api")
 
     return sorted(set(ai_paths))
 
@@ -198,33 +200,30 @@ def remove_remote_paths(
 
 
 def build_payload_tarball(dest: Path) -> None:
-    valuescan_dir = ROOT / "freqtrade" / "valuescan_api"
-    if not valuescan_dir.is_dir():
-        raise RuntimeError(f"Missing ValueScan module at {valuescan_dir}")
-
-    token_file = ROOT / "user_data" / "valuescan_localstorage.json"
+    ai_iteration_dir = ROOT / "freqtrade" / "ai_iteration"
+    if not ai_iteration_dir.is_dir():
+        raise RuntimeError(f"Missing AI iteration module at {ai_iteration_dir}")
 
     strategy_files = [
-        ROOT / "user_data" / "strategies" / "ValueScanSegmentedStrategyAI.py",
+        ROOT / "user_data" / "strategies" / "CcxtSegmentedStrategyAI.py",
     ]
     config_files = [
-        ROOT / "user_data" / "config_valuescan_main.json",
-        ROOT / "user_data" / "config_valuescan_alt.json",
+        ROOT / "user_data" / "config_ccxt_main.json",
+        ROOT / "user_data" / "config_ccxt_alt.json",
     ]
-    monitor_script = ROOT / "scripts" / "valuescan_monitor_api.py"
+    monitor_script = ROOT / "scripts" / "ccxt_monitor_api.py"
 
-    for path in [*strategy_files, *config_files, token_file, monitor_script]:
+    for path in [*strategy_files, *config_files, monitor_script]:
         if not path.exists():
             raise RuntimeError(f"Missing required file: {path}")
 
     with tarfile.open(dest, "w:gz") as tar:
-        tar.add(valuescan_dir, arcname="freqtrade/valuescan_api")
+        tar.add(ai_iteration_dir, arcname="freqtrade/ai_iteration")
         for strategy_file in strategy_files:
             tar.add(strategy_file, arcname=f"user_data/strategies/{strategy_file.name}")
         for config_file in config_files:
             tar.add(config_file, arcname=f"user_data/{config_file.name}")
-        tar.add(token_file, arcname="user_data/valuescan_localstorage.json")
-        tar.add(monitor_script, arcname="scripts/valuescan_monitor_api.py")
+        tar.add(monitor_script, arcname="scripts/ccxt_monitor_api.py")
 
 
 def write_remote_file(
@@ -255,7 +254,7 @@ def main() -> None:  # noqa: C901
     parser.add_argument(
         "--no-monitor",
         action="store_true",
-        help="Skip installing the ValueScan monitor API service.",
+        help="Skip installing the AI monitor API service.",
     )
     parser.add_argument(
         "--cleanup-only",
@@ -288,7 +287,7 @@ def main() -> None:  # noqa: C901
     port = int(env.get("DEPLOY_PORT", "22"))
     deploy_dir = env.get("DEPLOY_DIR", DEFAULT_DEPLOY_DIR).rstrip("/")
     cleanup_paths = parse_cleanup_paths(env.get("DEPLOY_CLEANUP_PATHS", ""))
-    config_rel = env.get("DEPLOY_CONFIG", "user_data/config_valuescan_main.json").lstrip("/")
+    config_rel = env.get("DEPLOY_CONFIG", "user_data/config_ccxt_main.json").lstrip("/")
     config_list = parse_cleanup_paths(env.get("DEPLOY_CONFIGS", ""))
     if not config_list:
         config_list = [config_rel]
@@ -297,7 +296,11 @@ def main() -> None:  # noqa: C901
     monitor_symbol = env.get("MONITOR_SYMBOL", "BTC")
     monitor_state_files = env.get(
         "MONITOR_STATE_FILES",
-        "user_data/valuescan_iteration_state_main.json,user_data/valuescan_iteration_state_alt.json",
+        "user_data/ai_iteration_state_main.json,user_data/ai_iteration_state_alt.json",
+    )
+    monitor_feedback_files = env.get(
+        "MONITOR_FEEDBACK_FILES",
+        "user_data/ai_iteration_feedback_main.jsonl,user_data/ai_iteration_feedback_alt.jsonl",
     )
     cornna_domain = env.get("CORNNA_DOMAIN", "cornna.dpdns.org")
     cornna_web_root = env.get("CORNNA_WEB_ROOT", "/var/www/cornna")
@@ -403,12 +406,12 @@ def main() -> None:  # noqa: C901
             if not args.no_monitor:
                 monitor_exec = (
                     f"{deploy_dir}/.venv/bin/python "
-                    f"{deploy_dir}/scripts/valuescan_monitor_api.py"
+                    f"{deploy_dir}/scripts/ccxt_monitor_api.py"
                 )
                 monitor_service = "\n".join(
                     [
                         "[Unit]",
-                        "Description=Cornna ValueScan Monitor API",
+                        "Description=Cornna AI Monitor API",
                         "After=network-online.target",
                         "Wants=network-online.target",
                         "",
@@ -420,6 +423,7 @@ def main() -> None:  # noqa: C901
                         f"Environment=MONITOR_SYMBOL={monitor_symbol}",
                         "Environment=MONITOR_REFRESH=15",
                         f"Environment=MONITOR_STATE_FILES={monitor_state_files}",
+                        f"Environment=MONITOR_FEEDBACK_FILES={monitor_feedback_files}",
                         "Restart=on-failure",
                         "RestartSec=5",
                         "",

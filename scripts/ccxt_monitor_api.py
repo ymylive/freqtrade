@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterable
 from pathlib import Path
@@ -9,8 +10,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from freqtrade.valuescan_api import get_provider
-from freqtrade.valuescan_api.ai_tuner import DEFAULT_SEGMENT, ValueScanAITuner
+from freqtrade.ai_iteration import DEFAULT_SEGMENT, AiIterationTuner
 
 
 app = FastAPI()
@@ -23,20 +23,14 @@ def _env_list(value: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _load_tuners(paths: Iterable[str]) -> list[ValueScanAITuner]:
-    tuners: list[ValueScanAITuner] = []
+def _load_tuners(paths: Iterable[str]) -> list[AiIterationTuner]:
+    tuners: list[AiIterationTuner] = []
     for raw_path in paths:
         path = Path(raw_path)
         if not path.is_absolute():
             path = Path.cwd() / path
-        tuners.append(ValueScanAITuner(path, min_trades=1, profit_threshold=0.0))
+        tuners.append(AiIterationTuner(path, min_trades=1, profit_threshold=0.0))
     return tuners
-
-
-def _sum_stats(stats: dict[str, Any]) -> tuple[int, int]:
-    wins = int(stats.get("wins", 0))
-    losses = int(stats.get("losses", 0))
-    return wins, losses
 
 
 def _extract_tuned_params(state: dict[str, Any]) -> int:
@@ -58,8 +52,8 @@ def _load_iteration_stats() -> dict[str, Any]:
     state_files = _env_list(os.getenv("MONITOR_STATE_FILES", ""))
     if not state_files:
         state_files = [
-            "user_data/valuescan_iteration_state_main.json",
-            "user_data/valuescan_iteration_state_alt.json",
+            "user_data/ai_iteration_state_main.json",
+            "user_data/ai_iteration_state_alt.json",
         ]
     total_wins = 0
     total_losses = 0
@@ -82,37 +76,60 @@ def _load_iteration_stats() -> dict[str, Any]:
     }
 
 
+def _read_last_feedback(paths: Iterable[str]) -> dict[str, Any]:
+    for raw_path in paths:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+            if not lines:
+                continue
+            payload = json.loads(lines[-1])
+            if isinstance(payload, dict):
+                return payload
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    return {}
+
+
 @app.get("/api/monitor")
 def monitor() -> JSONResponse:
-    symbol = os.getenv("MONITOR_SYMBOL", "BTC").upper()
     refresh_window = int(os.getenv("MONITOR_REFRESH", "15"))
-
-    provider = get_provider()
-    signal_strength = provider.get_signal_strength(symbol)
-    ai = provider.get_coin_ai_analysis(symbol)
-    bullish_ratio = 0.0
-    bearish_ratio = 0.0
-    if isinstance(ai, dict) and ai.get("code") == 200:
-        ai_data = ai.get("data", {})
-        bullish_ratio = float(ai_data.get("bullishRatio", 0.0) or 0.0)
-        bearish_ratio = float(ai_data.get("bearishRatio", 0.0) or 0.0)
-
+    feedback_files = _env_list(os.getenv("MONITOR_FEEDBACK_FILES", ""))
+    if not feedback_files:
+        feedback_files = [
+            "user_data/ai_iteration_feedback_main.jsonl",
+            "user_data/ai_iteration_feedback_alt.jsonl",
+        ]
     stats = _load_iteration_stats()
+    last_feedback = _read_last_feedback(feedback_files)
+    if isinstance(last_feedback, dict):
+        entry_features = last_feedback.get("entry_features", {})
+    else:
+        entry_features = {}
+
+    trend_bias = float(entry_features.get("ema_diff", 0.0) or 0.0)
+    momentum = float(entry_features.get("price_change_1h", 0.0) or 0.0)
+    volatility = float(entry_features.get("atr_pct", 0.0) or 0.0)
+    win_rate = stats["wins"] / max(1, stats["wins"] + stats["losses"])
+
     alerts = []
-    if signal_strength > 0.4:
-        alerts.append("Flow bias positive")
-    if bullish_ratio >= 60:
-        alerts.append("Bullish ratio elevated")
-    if bearish_ratio >= 60:
-        alerts.append("Bearish ratio elevated")
+    if abs(trend_bias) > 0.003:
+        alerts.append("Trend shift detected")
+    if volatility > 0.02:
+        alerts.append("Volatility spike")
     if not alerts:
         alerts.append("Signals stable")
 
     payload = {
-        "flow_bias": signal_strength,
-        "whale_pressure": bullish_ratio / 100.0,
-        "sentiment": bullish_ratio,
-        "signal_health": 100.0 if abs(signal_strength) > 0 else 60.0,
+        "trend_bias": trend_bias,
+        "momentum": momentum,
+        "volatility": volatility,
+        "signal_health": round(win_rate * 100, 2),
         "refresh_window": refresh_window,
         "tuned_params": stats["tuned_params"],
         "trades_evaluated": stats["wins"] + stats["losses"],
