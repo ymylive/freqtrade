@@ -90,6 +90,12 @@
         "feedback_file": "user_data/ai_iteration_feedback_main.jsonl",
         "min_trades": 10,
         "profit_threshold": 0.0,
+        "smoothing": 0.2,
+        "weight_scale": 0.02,
+        "weight_min": 0.6,
+        "weight_max": 2.5,
+        "win_rate_bias": 0.15,
+        "min_trade_minutes": 15,
         "refresh_minutes": 20
     },
     "bot_name": "freqtrade-main",

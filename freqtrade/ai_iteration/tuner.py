@@ -17,6 +17,7 @@ FEATURE_KEYS = (
     "price_change_4h",
 )
 DEFAULT_SEGMENT = "default"
+STATE_VERSION = 2
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -55,10 +56,20 @@ class AiIterationTuner:
         *,
         min_trades: int = 8,
         profit_threshold: float = 0.0,
+        smoothing: float = 0.2,
+        weight_scale: float = 0.02,
+        weight_min: float = 0.6,
+        weight_max: float = 2.5,
+        win_rate_bias: float = 0.15,
     ) -> None:
         self.state_path = state_path
         self.min_trades = max(1, int(min_trades))
         self.profit_threshold = float(profit_threshold)
+        self.smoothing = _clamp(float(smoothing), 0.01, 1.0)
+        self.weight_scale = max(1e-6, float(weight_scale))
+        self.weight_min = max(0.1, float(weight_min))
+        self.weight_max = max(self.weight_min, float(weight_max))
+        self.win_rate_bias = _clamp(float(win_rate_bias), 0.0, 0.5)
         self._state = self._load_state()
 
     def update_from_trade(
@@ -68,14 +79,17 @@ class AiIterationTuner:
         features: Mapping[str, float],
         *,
         segment: str = DEFAULT_SEGMENT,
+        save: bool = True,
     ) -> None:
         if side not in ("long", "short"):
             return
         stats = self._get_segment(segment)[side]
         is_win = profit_ratio > self.profit_threshold
-        self._update_stats(stats, is_win, features)
+        weight = self._trade_weight(profit_ratio)
+        self._update_stats(stats, is_win, features, weight=weight)
         self._state["updated_at"] = datetime.now(UTC).isoformat()
-        self._save_state()
+        if save:
+            self._save_state()
 
     def compute_thresholds(
         self,
@@ -88,28 +102,60 @@ class AiIterationTuner:
         segment_state = self._get_segment(segment)
         long_stats = segment_state["long"]
         short_stats = segment_state["short"]
+        long_win_rate = self._win_rate(long_stats)
+        short_win_rate = self._win_rate(short_stats)
 
-        rsi_long = self._derive_threshold(long_stats, "rsi", prefer_higher=True)
+        rsi_long = self._derive_threshold(
+            long_stats,
+            "rsi",
+            prefer_higher=True,
+            win_rate=long_win_rate,
+        )
         if rsi_long is not None and "rsi_long" in bounds:
             thresholds["rsi_long"] = _clamp(rsi_long, *bounds["rsi_long"])
 
-        rsi_short = self._derive_threshold(short_stats, "rsi", prefer_higher=False)
+        rsi_short = self._derive_threshold(
+            short_stats,
+            "rsi",
+            prefer_higher=False,
+            win_rate=short_win_rate,
+        )
         if rsi_short is not None and "rsi_short" in bounds:
             thresholds["rsi_short"] = _clamp(rsi_short, *bounds["rsi_short"])
 
-        macd_hist = self._derive_threshold(long_stats, "macd_hist", prefer_higher=True)
+        macd_hist = self._derive_threshold(
+            long_stats,
+            "macd_hist",
+            prefer_higher=True,
+            win_rate=long_win_rate,
+        )
         if macd_hist is not None and "macd_hist" in bounds:
             thresholds["macd_hist"] = _clamp(macd_hist, *bounds["macd_hist"])
 
-        ema_diff = self._derive_threshold(long_stats, "ema_diff", prefer_higher=True)
+        ema_diff = self._derive_threshold(
+            long_stats,
+            "ema_diff",
+            prefer_higher=True,
+            win_rate=long_win_rate,
+        )
         if ema_diff is not None and "ema_diff" in bounds:
             thresholds["ema_diff"] = _clamp(ema_diff, *bounds["ema_diff"])
 
-        atr_pct = self._derive_threshold(long_stats, "atr_pct", prefer_higher=True)
+        atr_pct = self._derive_threshold(
+            long_stats,
+            "atr_pct",
+            prefer_higher=True,
+            win_rate=long_win_rate,
+        )
         if atr_pct is not None and "atr_pct" in bounds:
             thresholds["atr_pct"] = _clamp(atr_pct, *bounds["atr_pct"])
 
-        volume_zscore = self._derive_threshold(long_stats, "volume_zscore", prefer_higher=True)
+        volume_zscore = self._derive_threshold(
+            long_stats,
+            "volume_zscore",
+            prefer_higher=True,
+            win_rate=long_win_rate,
+        )
         if volume_zscore is not None and "volume_zscore" in bounds:
             thresholds["volume_zscore"] = _clamp(volume_zscore, *bounds["volume_zscore"])
 
@@ -121,6 +167,7 @@ class AiIterationTuner:
         feature_key: str,
         *,
         prefer_higher: bool,
+        win_rate: float | None,
     ) -> float | None:
         wins = int(stats.get("wins", 0))
         losses = int(stats.get("losses", 0))
@@ -136,10 +183,20 @@ class AiIterationTuner:
             return None
         if not prefer_higher and mean_win >= mean_loss:
             return None
-        return (mean_win + mean_loss) / 2.0
+        base = (mean_win + mean_loss) / 2.0
+        if win_rate is None:
+            return base
+        bias = _clamp((win_rate - 0.5) * 2.0, -1.0, 1.0) * self.win_rate_bias
+        return base + bias * (mean_win - mean_loss)
 
     @staticmethod
-    def _update_stats(stats: dict[str, Any], is_win: bool, features: Mapping[str, float]) -> None:
+    def _update_stats(
+        stats: dict[str, Any],
+        is_win: bool,
+        features: Mapping[str, float],
+        *,
+        weight: float,
+    ) -> None:
         count_key = "wins" if is_win else "losses"
         mean_key = "mean_win" if is_win else "mean_loss"
         count = int(stats.get(count_key, 0))
@@ -155,8 +212,11 @@ class AiIterationTuner:
                 value = float(value)
             except (TypeError, ValueError):
                 continue
-            prev = float(mean_map.get(key, 0.0))
-            mean_map[key] = (prev * count + value) / (count + 1)
+            prev = float(mean_map.get(key, value))
+            if count == 0:
+                mean_map[key] = value
+            else:
+                mean_map[key] = prev + (value - prev) * weight
 
         stats[mean_key] = mean_map
         stats[count_key] = count + 1
@@ -182,7 +242,7 @@ class AiIterationTuner:
     @staticmethod
     def _default_state() -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": STATE_VERSION,
             "updated_at": None,
             "segments": {DEFAULT_SEGMENT: _empty_segment()},
         }
@@ -206,7 +266,7 @@ class AiIterationTuner:
             DEFAULT_SEGMENT: _empty_segment()
         }
         state = {
-            "version": 1,
+            "version": STATE_VERSION,
             "updated_at": data.get("updated_at"),
             "segments": segments_state,
         }
@@ -222,6 +282,61 @@ class AiIterationTuner:
                 stats.setdefault("mean_win", {})
                 stats.setdefault("mean_loss", {})
         return state
+
+    def _trade_weight(self, profit_ratio: float) -> float:
+        magnitude = abs(float(profit_ratio))
+        scaled = magnitude / self.weight_scale if self.weight_scale else 1.0
+        scaled = _clamp(scaled, self.weight_min, self.weight_max)
+        return _clamp(self.smoothing * scaled, 0.01, 1.0)
+
+    @staticmethod
+    def _win_rate(stats: Mapping[str, Any]) -> float | None:
+        wins = int(stats.get("wins", 0))
+        losses = int(stats.get("losses", 0))
+        total = wins + losses
+        if total <= 0:
+            return None
+        return wins / total
+
+    def apply_feedback_payload(self, payload: Mapping[str, Any]) -> bool:
+        if not isinstance(payload, Mapping):
+            return False
+        side = payload.get("side")
+        if side not in ("long", "short"):
+            return False
+        profit_ratio = payload.get("profit_ratio")
+        if profit_ratio is None:
+            return False
+        features = payload.get("entry_features") or payload.get("features")
+        if not isinstance(features, Mapping):
+            return False
+        segment = payload.get("segment") or DEFAULT_SEGMENT
+        self.update_from_trade(
+            str(side),
+            float(profit_ratio),
+            features,
+            segment=str(segment),
+            save=False,
+        )
+        return True
+
+    def replay_feedback(self, feedback_path: Path) -> int:
+        if not feedback_path.exists():
+            return 0
+        updated = 0
+        for raw_line in feedback_path.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if self.apply_feedback_payload(payload):
+                updated += 1
+        if updated:
+            self._state["updated_at"] = datetime.now(UTC).isoformat()
+            self._save_state()
+        return updated
 
     def get_segment_summary(self, segment: str = DEFAULT_SEGMENT) -> dict[str, Any]:
         seg = self._get_segment(segment)

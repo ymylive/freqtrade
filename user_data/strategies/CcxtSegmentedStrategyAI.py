@@ -52,9 +52,11 @@ class CcxtSegmentedStrategyAI(IStrategy):
         if isinstance(ai_cfg, dict):
             self._tuning_enabled = bool(ai_cfg.get("enabled", False))
             self._tuning_refresh_minutes = int(ai_cfg.get("refresh_minutes", 20))
+            self._tuning_min_trade_minutes = int(ai_cfg.get("min_trade_minutes", 15))
         else:
             self._tuning_enabled = False
             self._tuning_refresh_minutes = 20
+            self._tuning_min_trade_minutes = 15
         self._tuning_last_refresh: datetime | None = None
         self._tuner: AiIterationTuner | None = None
         self._feedback_store: AiFeedbackStore | None = None
@@ -87,6 +89,11 @@ class CcxtSegmentedStrategyAI(IStrategy):
             state_path,
             min_trades=int(cfg.get("min_trades", 10)),
             profit_threshold=float(cfg.get("profit_threshold", 0.0)),
+            smoothing=float(cfg.get("smoothing", 0.2)),
+            weight_scale=float(cfg.get("weight_scale", 0.02)),
+            weight_min=float(cfg.get("weight_min", 0.6)),
+            weight_max=float(cfg.get("weight_max", 2.5)),
+            win_rate_bias=float(cfg.get("win_rate_bias", 0.15)),
         )
         self._feedback_store = AiFeedbackStore(feedback_path)
 
@@ -264,41 +271,83 @@ class CcxtSegmentedStrategyAI(IStrategy):
             return
         try:
             if order.ft_order_side == trade.entry_side:
-                entry_features = self._feature_cache.get(pair, {})
-                if entry_features:
-                    trade.set_custom_data("ai_entry", entry_features)
-                    trade.set_custom_data("ai_segment", self._iteration_segment)
-                    trade.set_custom_data("ai_entry_ts", current_time.isoformat())
+                self._store_entry_context(trade, pair, current_time)
             elif order.ft_order_side == trade.exit_side:
-                entry_features = trade.get_custom_data("ai_entry", {}) or {}
-                if not entry_features:
-                    entry_features = self._feature_cache.get(pair, {})
-                if entry_features:
-                    profit_ratio = trade.calc_profit_ratio(order.safe_price)
-                    side = "short" if trade.is_short else "long"
-                    if self._tuner:
-                        self._tuner.update_from_trade(
-                            side,
-                            profit_ratio,
-                            entry_features,
-                            segment=self._iteration_segment,
-                        )
-                        self._refresh_tuned_thresholds(force=True)
-                    if self._feedback_store:
-                        payload = {
-                            "timestamp": current_time.replace(tzinfo=UTC).isoformat(),
-                            "trade_id": trade.id,
-                            "pair": pair,
-                            "side": side,
-                            "segment": self._iteration_segment,
-                            "profit_ratio": profit_ratio,
-                            "exit_reason": trade.exit_reason,
-                            "entry_features": entry_features,
-                            "exit_features": self._feature_cache.get(pair, {}),
-                        }
-                        self._feedback_store.append_trade_feedback(payload)
+                self._handle_exit_feedback(trade, pair, order, current_time)
         except Exception as exc:
             logger.warning("AI tuning feedback failed for %s: %s", pair, exc)
+
+    def _store_entry_context(self, trade, pair: str, current_time: datetime) -> None:
+        entry_features = self._feature_cache.get(pair, {})
+        if not entry_features:
+            return
+        trade.set_custom_data("ai_entry", entry_features)
+        trade.set_custom_data("ai_segment", self._iteration_segment)
+        trade.set_custom_data("ai_entry_ts", current_time.isoformat())
+        trade.set_custom_data("ai_entry_thresholds", self._current_thresholds())
+
+    def _compute_trade_metrics(self, trade, current_time: datetime) -> tuple[int, float, float]:
+        duration_min = max(
+            1,
+            int(
+                (current_time.replace(tzinfo=UTC) - trade.open_date_utc).total_seconds()
+                / 60
+            ),
+        )
+        open_rate = float(trade.open_rate or 0.0)
+        min_rate = float(trade.min_rate if trade.min_rate else open_rate)
+        max_rate = float(trade.max_rate if trade.max_rate else open_rate)
+        if open_rate <= 0:
+            return duration_min, 0.0, 0.0
+        if trade.is_short:
+            drawdown = (open_rate - max_rate) / open_rate
+            runup = (open_rate - min_rate) / open_rate
+        else:
+            drawdown = (min_rate - open_rate) / open_rate
+            runup = (max_rate - open_rate) / open_rate
+        return duration_min, drawdown, runup
+
+    def _handle_exit_feedback(self, trade, pair: str, order, current_time: datetime) -> None:
+        entry_features = trade.get_custom_data("ai_entry", {}) or {}
+        if not entry_features:
+            entry_features = self._feature_cache.get(pair, {})
+        if not entry_features:
+            return
+        raw_profit_ratio = trade.calc_profit_ratio(order.safe_price)
+        side = "short" if trade.is_short else "long"
+        duration_min, drawdown, runup = self._compute_trade_metrics(trade, current_time)
+        profit_ratio = raw_profit_ratio
+        if duration_min < self._tuning_min_trade_minutes:
+            profit_ratio *= duration_min / self._tuning_min_trade_minutes
+        if self._tuner:
+            self._tuner.update_from_trade(
+                side,
+                profit_ratio,
+                entry_features,
+                segment=self._iteration_segment,
+            )
+            self._refresh_tuned_thresholds(force=True)
+        if self._feedback_store:
+            payload = {
+                "timestamp": current_time.replace(tzinfo=UTC).isoformat(),
+                "trade_id": trade.id,
+                "pair": pair,
+                "side": side,
+                "segment": self._iteration_segment,
+                "profit_ratio": profit_ratio,
+                "raw_profit_ratio": raw_profit_ratio,
+                "trade_minutes": duration_min,
+                "max_drawdown": drawdown,
+                "max_runup": runup,
+                "exit_reason": trade.exit_reason,
+                "entry_thresholds": trade.get_custom_data(
+                    "ai_entry_thresholds",
+                    {},
+                ),
+                "entry_features": entry_features,
+                "exit_features": self._feature_cache.get(pair, {}),
+            }
+            self._feedback_store.append_trade_feedback(payload)
 
     def leverage(
         self,

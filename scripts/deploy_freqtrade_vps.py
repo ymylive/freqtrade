@@ -212,8 +212,9 @@ def build_payload_tarball(dest: Path) -> None:
         ROOT / "user_data" / "config_ccxt_alt.json",
     ]
     monitor_script = ROOT / "scripts" / "ccxt_monitor_api.py"
+    replay_script = ROOT / "scripts" / "ai_iteration_replay.py"
 
-    for path in [*strategy_files, *config_files, monitor_script]:
+    for path in [*strategy_files, *config_files, monitor_script, replay_script]:
         if not path.exists():
             raise RuntimeError(f"Missing required file: {path}")
 
@@ -224,6 +225,7 @@ def build_payload_tarball(dest: Path) -> None:
         for config_file in config_files:
             tar.add(config_file, arcname=f"user_data/{config_file.name}")
         tar.add(monitor_script, arcname="scripts/ccxt_monitor_api.py")
+        tar.add(replay_script, arcname="scripts/ai_iteration_replay.py")
 
 
 def write_remote_file(

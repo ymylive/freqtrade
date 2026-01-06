@@ -49,3 +49,24 @@ def test_ai_feedback_store_writes_payload(tmp_path: Path) -> None:
 
     content = feedback_path.read_text(encoding="utf-8").strip()
     assert "\"trade_id\": 123" in content
+
+
+def test_ai_tuner_replay_feedback(tmp_path: Path) -> None:
+    state_path = tmp_path / "ai_state.json"
+    feedback_path = tmp_path / "feedback.jsonl"
+    feedback_path.write_text(
+        "\n".join(
+            [
+                '{"side":"long","profit_ratio":0.03,"segment":"main","entry_features":{"rsi":60}}',
+                '{"side":"short","profit_ratio":-0.02,"segment":"main","entry_features":{"rsi":40}}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    tuner = AiIterationTuner(state_path, min_trades=1, profit_threshold=0.0)
+    updated = tuner.replay_feedback(feedback_path)
+    assert updated == 2
+    assert tuner.get_segment_summary("main")["wins"] + tuner.get_segment_summary("main")[
+        "losses"
+    ] == 2
