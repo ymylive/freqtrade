@@ -7,7 +7,7 @@
     "stake_amount": 80,
     "tradable_balance_ratio": 1,
     "fiat_display_currency": "USD",
-    "dry_run": true,
+    "dry_run": false,
     "dry_run_wallet": 12000,
     "timeframe": "1h",
     "cancel_open_orders_on_exit": true,
@@ -84,10 +84,10 @@
         "iteration": {
             "segment": "alt",
             "threshold_offsets": {
-                "buy_signal_strength": 0.05,
-                "sell_signal_strength": -0.05,
-                "bullish_ratio_threshold": 5.0,
-                "bearish_ratio_threshold": 5.0
+                "buy_signal_strength": 0.08,
+                "sell_signal_strength": -0.08,
+                "bullish_ratio_threshold": 6.0,
+                "bearish_ratio_threshold": 6.0
             }
         },
         "tuning": {
