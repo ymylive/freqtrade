@@ -294,6 +294,21 @@ def main() -> None:  # noqa: C901
     config_paths = [f"{deploy_dir}/{item.lstrip('/')}" for item in config_list]
     monitor_port = int(env.get("MONITOR_PORT", "9010"))
     monitor_symbol = env.get("MONITOR_SYMBOL", "BTC")
+    monitor_exchange = env.get("MONITOR_EXCHANGE", "binance")
+    monitor_timeframe = env.get("MONITOR_TIMEFRAME", "5m")
+    monitor_quote = env.get("MONITOR_QUOTE", "USDT")
+    monitor_limit = env.get("MONITOR_LIMIT", "120")
+    monitor_momentum_bars = env.get("MONITOR_MOMENTUM_BARS", "12")
+    monitor_volatility_bars = env.get("MONITOR_VOLATILITY_BARS", "14")
+    monitor_ema_fast = env.get("MONITOR_EMA_FAST", "9")
+    monitor_ema_slow = env.get("MONITOR_EMA_SLOW", "21")
+    monitor_cache_ttl = env.get("MONITOR_CACHE_TTL", "10")
+    monitor_sandbox = env.get("MONITOR_SANDBOX", "")
+    monitor_default_type = env.get("MONITOR_DEFAULT_TYPE", "")
+    monitor_price_type = env.get("MONITOR_PRICE_TYPE", "")
+    monitor_api_key = env.get("MONITOR_API_KEY", "")
+    monitor_api_secret = env.get("MONITOR_API_SECRET", "")
+    monitor_api_password = env.get("MONITOR_API_PASSWORD", "")
     monitor_state_files = env.get(
         "MONITOR_STATE_FILES",
         "user_data/ai_iteration_state_main.json,user_data/ai_iteration_state_alt.json",
@@ -408,6 +423,40 @@ def main() -> None:  # noqa: C901
                     f"{deploy_dir}/.venv/bin/python "
                     f"{deploy_dir}/scripts/ccxt_monitor_api.py"
                 )
+                monitor_env = [
+                    f"Environment=MONITOR_PORT={monitor_port}",
+                    f"Environment=MONITOR_SYMBOL={monitor_symbol}",
+                    f"Environment=MONITOR_EXCHANGE={monitor_exchange}",
+                    f"Environment=MONITOR_TIMEFRAME={monitor_timeframe}",
+                    f"Environment=MONITOR_QUOTE={monitor_quote}",
+                    f"Environment=MONITOR_LIMIT={monitor_limit}",
+                    f"Environment=MONITOR_MOMENTUM_BARS={monitor_momentum_bars}",
+                    f"Environment=MONITOR_VOLATILITY_BARS={monitor_volatility_bars}",
+                    f"Environment=MONITOR_EMA_FAST={monitor_ema_fast}",
+                    f"Environment=MONITOR_EMA_SLOW={monitor_ema_slow}",
+                    f"Environment=MONITOR_CACHE_TTL={monitor_cache_ttl}",
+                    "Environment=MONITOR_REFRESH=15",
+                    f"Environment=MONITOR_STATE_FILES={monitor_state_files}",
+                    f"Environment=MONITOR_FEEDBACK_FILES={monitor_feedback_files}",
+                ]
+                if monitor_sandbox:
+                    monitor_env.append(f"Environment=MONITOR_SANDBOX={monitor_sandbox}")
+                if monitor_default_type:
+                    monitor_env.append(
+                        f"Environment=MONITOR_DEFAULT_TYPE={monitor_default_type}"
+                    )
+                if monitor_price_type:
+                    monitor_env.append(f"Environment=MONITOR_PRICE_TYPE={monitor_price_type}")
+                if monitor_api_key:
+                    monitor_env.append(f"Environment=MONITOR_API_KEY={monitor_api_key}")
+                if monitor_api_secret:
+                    monitor_env.append(
+                        f"Environment=MONITOR_API_SECRET={monitor_api_secret}"
+                    )
+                if monitor_api_password:
+                    monitor_env.append(
+                        f"Environment=MONITOR_API_PASSWORD={monitor_api_password}"
+                    )
                 monitor_service = "\n".join(
                     [
                         "[Unit]",
@@ -419,11 +468,7 @@ def main() -> None:  # noqa: C901
                         "Type=simple",
                         f"WorkingDirectory={deploy_dir}",
                         f"ExecStart={monitor_exec}",
-                        f"Environment=MONITOR_PORT={monitor_port}",
-                        f"Environment=MONITOR_SYMBOL={monitor_symbol}",
-                        "Environment=MONITOR_REFRESH=15",
-                        f"Environment=MONITOR_STATE_FILES={monitor_state_files}",
-                        f"Environment=MONITOR_FEEDBACK_FILES={monitor_feedback_files}",
+                        *monitor_env,
                         "Restart=on-failure",
                         "RestartSec=5",
                         "",
