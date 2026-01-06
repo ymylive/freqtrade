@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import shlex
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+from typing import Dict, Iterable
+
+try:
+    import paramiko
+except ImportError:
+    print("Missing dependency: paramiko. Install with: python -m pip install paramiko")
+    sys.exit(1)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DEPLOY_DIR = "/opt/freqtrade"
+REQUIRED_ENV_KEYS = (
+    "DEPLOY_HOST",
+    "DEPLOY_USER",
+    "DEPLOY_PASS",
+    "FREQTRADE__EXCHANGE__KEY",
+    "FREQTRADE__EXCHANGE__SECRET",
+)
+REQUIRED_CLEANUP_KEYS = (
+    "DEPLOY_HOST",
+    "DEPLOY_USER",
+    "DEPLOY_PASS",
+)
+
+
+def load_env_file(path: Path) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip()] = value.strip().strip('"').strip("'")
+    return data
+
+
+def require_keys(env: Dict[str, str], keys: Iterable[str]) -> None:
+    missing = [key for key in keys if not env.get(key)]
+    if missing:
+        raise RuntimeError(f"Missing required env keys: {', '.join(missing)}")
+
+
+def connect_ssh(host: str, username: str, password: str, port: int) -> paramiko.SSHClient:
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(hostname=host, username=username, password=password, port=port, timeout=15)
+    return client
+
+
+def run_remote(client: paramiko.SSHClient, command: str) -> None:
+    stdin, stdout, stderr = client.exec_command(command)
+    exit_status = stdout.channel.recv_exit_status()
+    out = stdout.read().decode("utf-8", errors="ignore")
+    err = stderr.read().decode("utf-8", errors="ignore")
+    if exit_status != 0:
+        raise RuntimeError(f"Remote command failed: {command}\n{out}\n{err}")
+
+
+def run_remote_capture(client: paramiko.SSHClient, command: str) -> str:
+    stdin, stdout, stderr = client.exec_command(command)
+    exit_status = stdout.channel.recv_exit_status()
+    out = stdout.read().decode("utf-8", errors="ignore")
+    err = stderr.read().decode("utf-8", errors="ignore")
+    if exit_status != 0:
+        raise RuntimeError(f"Remote command failed: {command}\n{out}\n{err}")
+    return out
+
+
+def install_system_packages(client: paramiko.SSHClient) -> None:
+    if _remote_command_exists(client, "apt-get"):
+        run_remote(client, "apt-get update -y")
+        run_remote(
+            client,
+            "apt-get install -y git python3 python3-venv python3-pip "
+            "build-essential libtool pkg-config curl wget",
+        )
+        run_remote(client, "apt-get install -y libta-lib0 libta-lib-dev || true")
+        return
+    if _remote_command_exists(client, "dnf"):
+        run_remote(
+            client,
+            "dnf install -y git python3 python3-pip python3-virtualenv "
+            "gcc gcc-c++ make libtool pkgconfig curl wget",
+        )
+        run_remote(client, "dnf install -y ta-lib ta-lib-devel || true")
+        return
+    if _remote_command_exists(client, "yum"):
+        run_remote(
+            client,
+            "yum install -y git python3 python3-pip python3-virtualenv "
+            "gcc gcc-c++ make libtool pkgconfig curl wget",
+        )
+        run_remote(client, "yum install -y ta-lib ta-lib-devel || true")
+        return
+    raise RuntimeError("No supported package manager found (apt-get/dnf/yum).")
+
+
+def _remote_command_exists(client: paramiko.SSHClient, command: str) -> bool:
+    stdin, stdout, stderr = client.exec_command(f"command -v {command}")
+    exit_status = stdout.channel.recv_exit_status()
+    return exit_status == 0
+
+
+def parse_cleanup_paths(raw: str) -> list[str]:
+    if not raw:
+        return []
+    normalized = raw.replace("\n", ",").replace(";", ",")
+    return [entry.strip() for entry in normalized.split(",") if entry.strip()]
+
+
+def discover_ai_iteration_paths(client: paramiko.SSHClient, deploy_dir: str) -> list[str]:
+    strategies_dir = f"{deploy_dir}/user_data/strategies"
+    ai_paths: list[str] = []
+    try:
+        listing = run_remote_capture(client, f"ls -1 {shlex.quote(strategies_dir)}")
+    except RuntimeError:
+        listing = ""
+    for line in listing.splitlines():
+        name = line.strip()
+        if not name or not name.endswith(".py"):
+            continue
+        lowered = name.lower()
+        if any(token in lowered for token in ("ai", "iteration")) or name.startswith("ValueScan"):
+            ai_paths.append(f"user_data/strategies/{name}")
+
+    user_data_dir = f"{deploy_dir}/user_data"
+    try:
+        listing = run_remote_capture(client, f"ls -1 {shlex.quote(str(user_data_dir))}")
+    except RuntimeError:
+        listing = ""
+    for line in listing.splitlines():
+        name = line.strip()
+        if not name or not name.startswith("valuescan"):
+            continue
+        lowered = name.lower()
+        if "localstorage" in lowered:
+            continue
+        if any(token in lowered for token in ("tuning", "feedback", "iteration", "ai")):
+            ai_paths.append(f"user_data/{name}")
+
+    return sorted(set(ai_paths))
+
+
+def render_cornna_nginx(domain: str, web_root: str, monitor_port: int) -> str:
+    return "\n".join(
+        [
+            "server {",
+            "  listen 80;",
+            f"  server_name {domain};",
+            "  return 301 https://$host$request_uri;",
+            "}",
+            "",
+            "server {",
+            "  listen 443 ssl http2;",
+            f"  server_name {domain};",
+            f"  root {web_root};",
+            "  index index.html;",
+            f"  ssl_certificate /etc/ssl/certs/{domain}.cer;",
+            f"  ssl_certificate_key /etc/ssl/private/{domain}.key;",
+            "",
+            "  location /api/ {",
+            f"    proxy_pass http://127.0.0.1:{monitor_port};",
+            "    proxy_http_version 1.1;",
+            "    proxy_set_header Host $host;",
+            "    proxy_set_header X-Real-IP $remote_addr;",
+            "    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+            "  }",
+            "",
+            "  location / {",
+            "    try_files $uri $uri/ =404;",
+            "  }",
+            "}",
+            "",
+        ]
+    )
+
+
+def remove_remote_paths(
+    client: paramiko.SSHClient,
+    deploy_dir: str,
+    rel_paths: Iterable[str],
+) -> None:
+    for rel_path in rel_paths:
+        if rel_path.startswith("/"):
+            raise RuntimeError(
+                f"Cleanup path must be relative to DEPLOY_DIR: {rel_path}"
+            )
+        full_path = f"{deploy_dir.rstrip('/')}/{rel_path.lstrip('/')}"
+        run_remote(client, f"rm -rf {shlex.quote(full_path)}")
+
+
+def build_payload_tarball(dest: Path) -> None:
+    valuescan_dir = ROOT / "freqtrade" / "valuescan_api"
+    if not valuescan_dir.is_dir():
+        raise RuntimeError(f"Missing ValueScan module at {valuescan_dir}")
+
+    token_file = ROOT / "user_data" / "valuescan_localstorage.json"
+
+    strategy_files = [
+        ROOT / "user_data" / "strategies" / "ValueScanSegmentedStrategyAI.py",
+    ]
+    config_files = [
+        ROOT / "user_data" / "config_valuescan_main.json",
+        ROOT / "user_data" / "config_valuescan_alt.json",
+    ]
+    monitor_script = ROOT / "scripts" / "valuescan_monitor_api.py"
+
+    for path in [*strategy_files, *config_files, token_file, monitor_script]:
+        if not path.exists():
+            raise RuntimeError(f"Missing required file: {path}")
+
+    with tarfile.open(dest, "w:gz") as tar:
+        tar.add(valuescan_dir, arcname="freqtrade/valuescan_api")
+        for strategy_file in strategy_files:
+            tar.add(strategy_file, arcname=f"user_data/strategies/{strategy_file.name}")
+        for config_file in config_files:
+            tar.add(config_file, arcname=f"user_data/{config_file.name}")
+        tar.add(token_file, arcname="user_data/valuescan_localstorage.json")
+        tar.add(monitor_script, arcname="scripts/valuescan_monitor_api.py")
+
+
+def write_remote_file(sftp: paramiko.SFTPClient, path: str, content: str, mode: int = 0o600) -> None:
+    with sftp.open(path, "w") as handle:
+        handle.write(content)
+    sftp.chmod(path, mode)
+
+
+def service_name_from_config(config_path: str) -> str:
+    name = Path(config_path).stem.replace("config_", "").replace("_", "-")
+    return f"freqtrade-{name}"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Deploy Freqtrade to VPS.")
+    parser.add_argument("--env-file", default="deploy.env", help="Path to env file.")
+    parser.add_argument("--cleanup", action="store_true", help="Remove AI strategy files on VPS.")
+    parser.add_argument(
+        "--cleanup-ai",
+        action="store_true",
+        help="Discover and remove AI iteration strategy files on VPS.",
+    )
+    parser.add_argument(
+        "--no-monitor",
+        action="store_true",
+        help="Skip installing the ValueScan monitor API service.",
+    )
+    parser.add_argument(
+        "--cleanup-only",
+        action="store_true",
+        help="Only remove AI strategy files and exit.",
+    )
+    parser.add_argument(
+        "--allow-empty-keys",
+        action="store_true",
+        help="Skip requiring exchange keys (dry-run only).",
+    )
+    args = parser.parse_args()
+
+    env_path = Path(args.env_file)
+    if not env_path.exists():
+        raise RuntimeError(f"Env file not found: {env_path}")
+
+    env = load_env_file(env_path)
+    allow_empty_keys = args.allow_empty_keys or env.get("DEPLOY_SKIP_KEYS") == "1"
+    if args.cleanup_only:
+        require_keys(env, REQUIRED_CLEANUP_KEYS)
+    elif allow_empty_keys:
+        require_keys(env, REQUIRED_CLEANUP_KEYS)
+    else:
+        require_keys(env, REQUIRED_ENV_KEYS)
+
+    host = env["DEPLOY_HOST"]
+    user = env["DEPLOY_USER"]
+    password = env["DEPLOY_PASS"]
+    port = int(env.get("DEPLOY_PORT", "22"))
+    deploy_dir = env.get("DEPLOY_DIR", DEFAULT_DEPLOY_DIR).rstrip("/")
+    cleanup_paths = parse_cleanup_paths(env.get("DEPLOY_CLEANUP_PATHS", ""))
+    config_rel = env.get("DEPLOY_CONFIG", "user_data/config_valuescan_main.json").lstrip("/")
+    config_list = parse_cleanup_paths(env.get("DEPLOY_CONFIGS", ""))
+    if not config_list:
+        config_list = [config_rel]
+    config_paths = [f"{deploy_dir}/{item.lstrip('/')}" for item in config_list]
+    monitor_port = int(env.get("MONITOR_PORT", "9010"))
+    monitor_symbol = env.get("MONITOR_SYMBOL", "BTC")
+    monitor_state_files = env.get(
+        "MONITOR_STATE_FILES",
+        "user_data/valuescan_iteration_state_main.json,user_data/valuescan_iteration_state_alt.json",
+    )
+    cornna_domain = env.get("CORNNA_DOMAIN", "cornna.dpdns.org")
+    cornna_web_root = env.get("CORNNA_WEB_ROOT", "/var/www/cornna")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tar_path = Path(tmpdir) / "freqtrade_payload.tar.gz"
+        if not args.cleanup_only:
+            build_payload_tarball(tar_path)
+
+        client = connect_ssh(host, user, password, port)
+        sftp = client.open_sftp()
+
+        try:
+            if args.cleanup or args.cleanup_only:
+                if not cleanup_paths:
+                    raise RuntimeError("Cleanup requested but DEPLOY_CLEANUP_PATHS is empty.")
+                remove_remote_paths(client, deploy_dir, cleanup_paths)
+                if args.cleanup_only:
+                    print("Cleanup completed.")
+                    return
+
+            if args.cleanup_ai:
+                ai_paths = discover_ai_iteration_paths(client, deploy_dir)
+                if ai_paths:
+                    remove_remote_paths(client, deploy_dir, ai_paths)
+
+            install_system_packages(client)
+
+            run_remote(client, f"mkdir -p {deploy_dir}")
+            run_remote(
+                client,
+                f"if [ ! -d {deploy_dir}/.git ]; then "
+                f"git clone https://github.com/freqtrade/freqtrade.git {deploy_dir}; "
+                f"else git -C {deploy_dir} pull --ff-only; fi",
+            )
+
+            run_remote(
+                client,
+                f"python3 -m venv {deploy_dir}/.venv",
+            )
+            run_remote(
+                client,
+                f"{deploy_dir}/.venv/bin/pip install --upgrade pip wheel setuptools",
+            )
+            run_remote(
+                client,
+                f"{deploy_dir}/.venv/bin/pip install -r {deploy_dir}/requirements.txt",
+            )
+            run_remote(
+                client,
+                f"{deploy_dir}/.venv/bin/pip install -e {deploy_dir}",
+            )
+
+            remote_tar = "/tmp/freqtrade_payload.tar.gz"
+            sftp.put(str(tar_path), remote_tar)
+            run_remote(client, f"tar -xzf {remote_tar} -C {deploy_dir}")
+
+            env_content = (
+                f"FREQTRADE__EXCHANGE__KEY={env.get('FREQTRADE__EXCHANGE__KEY', '')}\n"
+                f"FREQTRADE__EXCHANGE__SECRET={env.get('FREQTRADE__EXCHANGE__SECRET', '')}\n"
+            )
+            write_remote_file(sftp, f"{deploy_dir}/.env", env_content, mode=0o600)
+
+            for config_path in config_paths:
+                service_name = service_name_from_config(config_path)
+                service_content = "\n".join(
+                    [
+                        "[Unit]",
+                        f"Description=Freqtrade {service_name}",
+                        "After=network-online.target",
+                        "Wants=network-online.target",
+                        "",
+                        "[Service]",
+                        "Type=simple",
+                        f"WorkingDirectory={deploy_dir}",
+                        f"EnvironmentFile={deploy_dir}/.env",
+                        f"ExecStart={deploy_dir}/.venv/bin/python -m freqtrade trade "
+                        f"-c {config_path}",
+                        "Restart=on-failure",
+                        "RestartSec=5",
+                        "",
+                        "[Install]",
+                        "WantedBy=multi-user.target",
+                        "",
+                    ]
+                )
+                write_remote_file(
+                    sftp,
+                    f"/etc/systemd/system/{service_name}.service",
+                    service_content,
+                    mode=0o644,
+                )
+
+            run_remote(client, "systemctl daemon-reload")
+            for config_path in config_paths:
+                service_name = service_name_from_config(config_path)
+                run_remote(client, f"systemctl enable --now {service_name}")
+
+            if not args.no_monitor:
+                monitor_service = "\n".join(
+                    [
+                        "[Unit]",
+                        "Description=Cornna ValueScan Monitor API",
+                        "After=network-online.target",
+                        "Wants=network-online.target",
+                        "",
+                        "[Service]",
+                        "Type=simple",
+                        f"WorkingDirectory={deploy_dir}",
+                        f"ExecStart={deploy_dir}/.venv/bin/python {deploy_dir}/scripts/valuescan_monitor_api.py",
+                        f"Environment=MONITOR_PORT={monitor_port}",
+                        f"Environment=MONITOR_SYMBOL={monitor_symbol}",
+                        f"Environment=MONITOR_REFRESH=15",
+                        f"Environment=MONITOR_STATE_FILES={monitor_state_files}",
+                        "Restart=on-failure",
+                        "RestartSec=5",
+                        "",
+                        "[Install]",
+                        "WantedBy=multi-user.target",
+                        "",
+                    ]
+                )
+                write_remote_file(
+                    sftp,
+                    "/etc/systemd/system/cornna-monitor.service",
+                    monitor_service,
+                    mode=0o644,
+                )
+                run_remote(client, "systemctl daemon-reload")
+                run_remote(client, "systemctl enable --now cornna-monitor")
+
+                nginx_conf = render_cornna_nginx(cornna_domain, cornna_web_root, monitor_port)
+                write_remote_file(
+                    sftp,
+                    f"/etc/nginx/sites-available/{cornna_domain}.conf",
+                    nginx_conf,
+                    mode=0o644,
+                )
+                run_remote(client, "nginx -t")
+                run_remote(client, "systemctl reload nginx")
+        finally:
+            sftp.close()
+            client.close()
+
+    print("Deployment completed. Check status with: systemctl status freqtrade-* --no-pager")
+
+
+if __name__ == "__main__":
+    main()

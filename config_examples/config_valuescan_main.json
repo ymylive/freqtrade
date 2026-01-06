@@ -1,0 +1,106 @@
+{
+    "$schema": "https://schema.freqtrade.io/schema.json",
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "max_open_trades": 3,
+    "stake_currency": "USDT",
+    "stake_amount": 200,
+    "tradable_balance_ratio": 1,
+    "fiat_display_currency": "USD",
+    "dry_run": true,
+    "dry_run_wallet": 12000,
+    "timeframe": "1h",
+    "cancel_open_orders_on_exit": true,
+    "use_exit_signal": true,
+    "exit_profit_only": false,
+    "futures_funding_rate": 0,
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {
+            "enableRateLimit": true,
+            "urls": {
+                "api": {
+                    "public": "https://testnet.binancefuture.com/fapi/v1",
+                    "private": "https://testnet.binancefuture.com/fapi/v1"
+                }
+            }
+        },
+        "ccxt_async_config": {},
+        "pair_whitelist": [
+            "BTC/USDT:USDT",
+            "ETH/USDT:USDT",
+            "BNB/USDT:USDT",
+            "SOL/USDT:USDT",
+            "LTC/USDT:USDT"
+        ],
+        "pair_blacklist": []
+    },
+    "api_server": {
+        "enabled": false
+    },
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+    "exit_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "order_types": {
+        "entry": "limit",
+        "exit": "limit",
+        "emergency_exit": "market",
+        "force_exit": "market",
+        "force_entry": "market",
+        "stoploss": "market",
+        "stoploss_on_exchange": false
+    },
+    "order_time_in_force": {
+        "entry": "GTC",
+        "exit": "GTC"
+    },
+    "strategy": "ValueScanSegmentedStrategyAI",
+    "strategy_path": "user_data/strategies",
+    "valuescan": {
+        "token_file": "user_data/valuescan_localstorage.json",
+        "enable_backtest": false,
+        "require_live": true,
+        "iteration": {
+            "segment": "main",
+            "threshold_offsets": {
+                "buy_signal_strength": 0.0,
+                "sell_signal_strength": 0.0,
+                "bullish_ratio_threshold": 0.0,
+                "bearish_ratio_threshold": 0.0
+            }
+        },
+        "tuning": {
+            "enabled": true,
+            "state_file": "user_data/valuescan_iteration_state_main.json",
+            "feedback_file": "user_data/valuescan_iteration_feedback_main.jsonl",
+            "min_trades": 10,
+            "profit_threshold": 0.0,
+            "refresh_minutes": 20
+        }
+    },
+    "bot_name": "freqtrade-main",
+    "db_url": "sqlite:///user_data/trades_valuescan_main.sqlite",
+    "initial_state": "running",
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}
