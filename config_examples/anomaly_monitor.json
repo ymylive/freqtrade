@@ -34,6 +34,18 @@
     "model": "gemini-1.5-pro",
     "language": "zh"
   },
+  "ai_review": {
+    "enabled": true,
+    "api_url": "https://chat.cornna.xyz/gemini/v1/chat/completions",
+    "api_key": "",
+    "model": "gemini-1.5-pro",
+    "language": "zh",
+    "min_severity": "info",
+    "min_confidence": 0.6,
+    "fail_open": true,
+    "max_tokens": 256,
+    "timeout_seconds": 45
+  },
   "runtime": {
     "poll_seconds": 60,
     "alert_cooldown_seconds": 300,

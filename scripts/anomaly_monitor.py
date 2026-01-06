@@ -162,6 +162,21 @@ class AnomalyMonitor:
         self.report_interval = int(runtime.get("report_interval_minutes", 20))
         self.reports_dir = Path(runtime.get("reports_dir", "user_data/anomaly/reports"))
 
+    def _resolve_ai_review_config(self) -> dict[str, Any]:
+        review_cfg = _resolve_nested_config(self.config, "ai_review")
+        if review_cfg:
+            return review_cfg
+        report_cfg = _resolve_nested_config(self.config, "ai_report")
+        if report_cfg.get("api_url") and report_cfg.get("api_key"):
+            merged = {"enabled": True, **report_cfg}
+            merged.setdefault("min_confidence", 0.6)
+            merged.setdefault("min_severity", "info")
+            merged.setdefault("fail_open", True)
+            merged.setdefault("max_tokens", 256)
+            merged.setdefault("timeout_seconds", 45)
+            return merged
+        return {}
+
     def run_once(self) -> None:
         self.alpha_cache.refresh_if_needed()
         whale_report = _load_json(self.config.get("data_sources", {}).get("whale_report", ""))
@@ -172,8 +187,106 @@ class AnomalyMonitor:
         for symbol in symbols:
             anomalies.extend(self._detect_symbol(symbol, whale_report, retail_report))
 
+        anomalies = self._apply_ai_review(anomalies, whale_report, retail_report)
         self._emit_alerts(anomalies)
         self._generate_reports(symbols, whale_report, retail_report, anomalies)
+
+    def _apply_ai_review(
+        self,
+        anomalies: list[AnomalySignal],
+        whale_report: dict[str, Any],
+        retail_report: dict[str, Any],
+    ) -> list[AnomalySignal]:
+        if not anomalies:
+            return anomalies
+        review_cfg = self._resolve_ai_review_config()
+        if not review_cfg:
+            return anomalies
+        if not review_cfg.get("enabled", True):
+            return anomalies
+        review_settings = {
+            "min_rank": _severity_rank(str(review_cfg.get("min_severity", "info")).lower()),
+            "min_confidence": float(review_cfg.get("min_confidence", 0.6)),
+            "fail_open": bool(review_cfg.get("fail_open", True)),
+        }
+
+        grouped: dict[str, list[AnomalySignal]] = {}
+        for signal in anomalies:
+            grouped.setdefault(signal.symbol, []).append(signal)
+
+        approved: list[AnomalySignal] = []
+        for symbol, signals in grouped.items():
+            approved.extend(
+                self._apply_ai_review_for_symbol(
+                    symbol,
+                    signals,
+                    whale_report,
+                    retail_report,
+                    review_cfg,
+                    review_settings,
+                )
+            )
+        return approved
+
+    def _apply_ai_review_for_symbol(
+        self,
+        symbol: str,
+        signals: list[AnomalySignal],
+        whale_report: dict[str, Any],
+        retail_report: dict[str, Any],
+        review_cfg: dict[str, Any],
+        review_settings: dict[str, Any],
+    ) -> list[AnomalySignal]:
+        min_rank = int(review_settings.get("min_rank", 0))
+        review_targets = [
+            item for item in signals if _severity_rank(item.severity) >= min_rank
+        ]
+        if not review_targets:
+            return list(signals)
+        decision = self._review_symbol_signals(
+            symbol,
+            review_targets,
+            whale_report.get(symbol, {}) if isinstance(whale_report, dict) else {},
+            retail_report.get(symbol, {}) if isinstance(retail_report, dict) else {},
+            review_cfg,
+        )
+        if decision is None:
+            return list(signals) if review_settings.get("fail_open", True) else []
+        return self._filter_reviewed_signals(
+            signals,
+            review_targets,
+            decision,
+            review_settings,
+        )
+
+    def _filter_reviewed_signals(
+        self,
+        signals: list[AnomalySignal],
+        review_targets: list[AnomalySignal],
+        decision: dict[str, Any],
+        review_settings: dict[str, Any],
+    ) -> list[AnomalySignal]:
+        decision_map = _normalize_review_decisions(decision)
+        min_confidence = float(review_settings.get("min_confidence", 0.6))
+        fail_open = bool(review_settings.get("fail_open", True))
+        approved: list[AnomalySignal] = []
+        for signal in signals:
+            if signal not in review_targets:
+                approved.append(signal)
+                continue
+            entry = decision_map.get(signal.signal_type)
+            if entry is None:
+                if fail_open:
+                    approved.append(signal)
+                continue
+            confidence = float(entry.get("confidence", 0.0) or 0.0)
+            if entry.get("approve") and confidence >= min_confidence:
+                signal.details["ai_review"] = {
+                    "confidence": confidence,
+                    "reason": entry.get("reason", ""),
+                }
+                approved.append(signal)
+        return approved
 
     def _resolve_symbols(
         self,
@@ -403,6 +516,66 @@ class AnomalyMonitor:
         latest_path = self.reports_dir / f"{safe_symbol}-latest.md"
         latest_path.write_text(report, encoding="utf-8")
 
+    def _review_symbol_signals(
+        self,
+        symbol: str,
+        signals: list[AnomalySignal],
+        whale_data: dict[str, Any],
+        retail_data: dict[str, Any],
+        review_cfg: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        api_url = review_cfg.get("api_url")
+        api_key = review_cfg.get("api_key")
+        if not api_url or not api_key:
+            return None
+        prompt = self._build_review_prompt(
+            symbol,
+            signals,
+            whale_data,
+            retail_data,
+            review_cfg,
+        )
+        return _call_ai_review_api(prompt, review_cfg)
+
+    def _build_review_prompt(
+        self,
+        symbol: str,
+        signals: list[AnomalySignal],
+        whale_data: dict[str, Any],
+        retail_data: dict[str, Any],
+        review_cfg: dict[str, Any],
+    ) -> str:
+        market = self._fetch_market_metrics(symbol)
+        language = review_cfg.get("language", "zh")
+        lang_line = (
+            "Use Simplified Chinese for the reasons."
+            if language == "zh"
+            else "Use English for the reasons."
+        )
+        signal_lines = [
+            f"- {item.signal_type} severity={item.severity} details={item.details}"
+            for item in signals
+        ]
+        return "\n".join(
+            [
+                "You are a senior crypto signal reviewer.",
+                lang_line,
+                "Return JSON only, without markdown.",
+                "Schema:",
+                (
+                    '{"decisions": [{"signal_type": "...", "approve": true, '
+                    '"confidence": 0.0, "reason": "..."}], "overall_confidence": 0.0}'
+                ),
+                f"Symbol: {symbol}",
+                f"Market snapshot: {market}",
+                f"Whale metrics: {whale_data}",
+                f"Retail metrics: {retail_data}",
+                "Signals:",
+                *signal_lines,
+                "Approve only when the signal is actionable and consistent with the data.",
+            ]
+        )
+
 
 def _call_ai_api(prompt: str, config: dict[str, Any]) -> str | None:
     api_url = config.get("api_url")
@@ -429,6 +602,43 @@ def _call_ai_api(prompt: str, config: dict[str, Any]) -> str | None:
         return None
     message = choices[0].get("message", {})
     return message.get("content")
+
+
+def _call_ai_review_api(prompt: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    api_url = config.get("api_url")
+    confirming_api_key = config.get("api_key")
+    model = config.get("model", "gpt-4o-mini")
+    if not api_url or not confirming_api_key:
+        return None
+    headers = {
+        "Authorization": f"Bearer {confirming_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a crypto signal reviewer."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": float(config.get("temperature", 0.0)),
+        "max_tokens": int(config.get("max_tokens", 256)),
+    }
+    timeout = int(config.get("timeout_seconds", 45))
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        logger.warning("AI review request failed: %s", exc)
+        return None
+    choices = data.get("choices") or []
+    if not choices:
+        return None
+    message = choices[0].get("message", {})
+    content = message.get("content") or ""
+    if not content:
+        return None
+    return _extract_json_object(content)
 
 
 def _get_proxies() -> dict[str, str] | None:
@@ -469,6 +679,59 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _severity_rank(level: str) -> int:
+    value = str(level).lower()
+    mapping = {"info": 0, "low": 1, "medium": 2, "high": 3}
+    return mapping.get(value, 0)
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = text[start : end + 1]
+    try:
+        payload = json.loads(snippet)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _normalize_review_decisions(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    decisions = payload.get("decisions")
+    if isinstance(decisions, list):
+        normalized = {}
+        for item in decisions:
+            if not isinstance(item, dict):
+                continue
+            signal_type = item.get("signal_type")
+            if not signal_type:
+                continue
+            normalized[str(signal_type)] = {
+                "approve": bool(item.get("approve")),
+                "confidence": _safe_float(item.get("confidence")),
+                "reason": item.get("reason", ""),
+            }
+        return normalized
+    approved = payload.get("approved")
+    if isinstance(approved, list):
+        normalized = {}
+        for signal_type in approved:
+            normalized[str(signal_type)] = {
+                "approve": True,
+                "confidence": _safe_float(payload.get("confidence", 1.0)),
+                "reason": payload.get("reason", ""),
+            }
+        return normalized
+    return {}
+
+
+def _resolve_nested_config(config: dict[str, Any], key: str) -> dict[str, Any]:
+    value = config.get(key, {})
+    return value if isinstance(value, dict) else {}
 
 
 def _last_mad_z(values: list[float], window: int = 60, min_periods: int = 20) -> float:
