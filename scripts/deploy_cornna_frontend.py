@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Deploy Cornna frontend to a VPS and configure Nginx + acme.sh SSL (Cloudflare DNS-01).
 """
@@ -10,7 +9,6 @@ import os
 import posixpath
 import sys
 from pathlib import Path
-from typing import Iterable, Tuple
 
 import paramiko
 
@@ -46,13 +44,13 @@ def parse_args() -> argparse.Namespace:
 
 def connect_ssh(host: str, user: str, password: str) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507
     client.connect(hostname=host, username=user, password=password, timeout=20)
     return client
 
 
-def run_cmd(client: paramiko.SSHClient, command: str) -> Tuple[int, str, str]:
-    stdin, stdout, stderr = client.exec_command(command)
+def run_cmd(client: paramiko.SSHClient, command: str) -> tuple[int, str, str]:
+    _stdin, stdout, stderr = client.exec_command(command)
     exit_status = stdout.channel.recv_exit_status()
     out = stdout.read().decode("utf-8", errors="ignore")
     err = stderr.read().decode("utf-8", errors="ignore")
@@ -149,7 +147,8 @@ def main() -> int:
         upload_directory(sftp, local_dir, args.remote_dir)
 
         config_path = f"/etc/nginx/sites-available/{args.domain}.conf"
-        write_remote_file(sftp, config_path, render_nginx_config(args.domain, args.remote_dir, False))
+        config_payload = render_nginx_config(args.domain, args.remote_dir, False)
+        write_remote_file(sftp, config_path, config_payload)
         run_cmd(client, f"ln -sf {config_path} /etc/nginx/sites-enabled/{args.domain}.conf")
 
         install_cmd = (
@@ -166,7 +165,11 @@ def main() -> int:
         run_cmd(client, "nginx -t && systemctl reload nginx")
 
         acme_home = "$HOME/.acme.sh"
-        install_acme = f"if [ ! -f {acme_home}/acme.sh ]; then curl https://get.acme.sh | sh -s email={args.account_email or 'admin@' + args.domain}; fi"
+        acme_email = args.account_email or f"admin@{args.domain}"
+        install_acme = (
+            f"if [ ! -f {acme_home}/acme.sh ]; then "
+            f"curl https://get.acme.sh | sh -s email={acme_email}; fi"
+        )
         run_cmd(client, install_acme)
 
         issue_cmd = (
@@ -199,7 +202,8 @@ def main() -> int:
                 print(err, file=sys.stderr)
                 return 3
 
-        write_remote_file(sftp, config_path, render_nginx_config(args.domain, args.remote_dir, True))
+        config_payload = render_nginx_config(args.domain, args.remote_dir, True)
+        write_remote_file(sftp, config_path, config_payload)
         run_cmd(client, "nginx -t && systemctl reload nginx")
 
         print("Deployment complete.")

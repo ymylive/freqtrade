@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
+
 
 FEATURE_KEYS = (
     "signal_strength",
@@ -201,17 +203,22 @@ class ValueScanAITuner:
                 if not isinstance(segment, dict):
                     normalized_segments[key] = _empty_segment()
                     continue
-                long_stats = segment.get("long") if isinstance(segment.get("long"), dict) else _empty_stats()
-                short_stats = segment.get("short") if isinstance(segment.get("short"), dict) else _empty_stats()
+                long_raw = segment.get("long")
+                long_stats = long_raw if isinstance(long_raw, dict) else _empty_stats()
+                short_raw = segment.get("short")
+                short_stats = short_raw if isinstance(short_raw, dict) else _empty_stats()
                 normalized_segments[str(key)] = {"long": long_stats, "short": short_stats}
 
+        segments_state: dict[str, Any] = normalized_segments or {
+            DEFAULT_SEGMENT: _empty_segment()
+        }
         state = {
             "version": 2 if raw_version != 2 else raw_version,
             "updated_at": data.get("updated_at"),
-            "segments": normalized_segments or {DEFAULT_SEGMENT: _empty_segment()},
+            "segments": segments_state,
         }
 
-        for segment_state in state["segments"].values():
+        for segment_state in segments_state.values():
             for side in ("long", "short"):
                 stats = segment_state.get(side)
                 if not isinstance(stats, dict):

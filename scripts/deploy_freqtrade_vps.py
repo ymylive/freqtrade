@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 import argparse
-import os
 import shlex
 import sys
 import tarfile
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable
+
 
 try:
     import paramiko
@@ -31,8 +31,8 @@ REQUIRED_CLEANUP_KEYS = (
 )
 
 
-def load_env_file(path: Path) -> Dict[str, str]:
-    data: Dict[str, str] = {}
+def load_env_file(path: Path) -> dict[str, str]:
+    data: dict[str, str] = {}
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -42,7 +42,7 @@ def load_env_file(path: Path) -> Dict[str, str]:
     return data
 
 
-def require_keys(env: Dict[str, str], keys: Iterable[str]) -> None:
+def require_keys(env: dict[str, str], keys: Iterable[str]) -> None:
     missing = [key for key in keys if not env.get(key)]
     if missing:
         raise RuntimeError(f"Missing required env keys: {', '.join(missing)}")
@@ -50,13 +50,13 @@ def require_keys(env: Dict[str, str], keys: Iterable[str]) -> None:
 
 def connect_ssh(host: str, username: str, password: str, port: int) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507
     client.connect(hostname=host, username=username, password=password, port=port, timeout=15)
     return client
 
 
 def run_remote(client: paramiko.SSHClient, command: str) -> None:
-    stdin, stdout, stderr = client.exec_command(command)
+    _stdin, stdout, stderr = client.exec_command(command)
     exit_status = stdout.channel.recv_exit_status()
     out = stdout.read().decode("utf-8", errors="ignore")
     err = stderr.read().decode("utf-8", errors="ignore")
@@ -65,7 +65,7 @@ def run_remote(client: paramiko.SSHClient, command: str) -> None:
 
 
 def run_remote_capture(client: paramiko.SSHClient, command: str) -> str:
-    stdin, stdout, stderr = client.exec_command(command)
+    _stdin, stdout, stderr = client.exec_command(command)
     exit_status = stdout.channel.recv_exit_status()
     out = stdout.read().decode("utf-8", errors="ignore")
     err = stderr.read().decode("utf-8", errors="ignore")
@@ -104,7 +104,7 @@ def install_system_packages(client: paramiko.SSHClient) -> None:
 
 
 def _remote_command_exists(client: paramiko.SSHClient, command: str) -> bool:
-    stdin, stdout, stderr = client.exec_command(f"command -v {command}")
+    _stdin, stdout, _stderr = client.exec_command(f"command -v {command}")
     exit_status = stdout.channel.recv_exit_status()
     return exit_status == 0
 
@@ -227,7 +227,12 @@ def build_payload_tarball(dest: Path) -> None:
         tar.add(monitor_script, arcname="scripts/valuescan_monitor_api.py")
 
 
-def write_remote_file(sftp: paramiko.SFTPClient, path: str, content: str, mode: int = 0o600) -> None:
+def write_remote_file(
+    sftp: paramiko.SFTPClient,
+    path: str,
+    content: str,
+    mode: int = 0o600,
+) -> None:
     with sftp.open(path, "w") as handle:
         handle.write(content)
     sftp.chmod(path, mode)
@@ -238,7 +243,7 @@ def service_name_from_config(config_path: str) -> str:
     return f"freqtrade-{name}"
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901
     parser = argparse.ArgumentParser(description="Deploy Freqtrade to VPS.")
     parser.add_argument("--env-file", default="deploy.env", help="Path to env file.")
     parser.add_argument("--cleanup", action="store_true", help="Remove AI strategy files on VPS.")
@@ -346,9 +351,13 @@ def main() -> None:
                 f"{deploy_dir}/.venv/bin/pip install -e {deploy_dir}",
             )
 
-            remote_tar = "/tmp/freqtrade_payload.tar.gz"
+            remote_tar = run_remote_capture(
+                client,
+                "mktemp /tmp/freqtrade_payload.XXXXXX.tar.gz",
+            ).strip()
             sftp.put(str(tar_path), remote_tar)
             run_remote(client, f"tar -xzf {remote_tar} -C {deploy_dir}")
+            run_remote(client, f"rm -f {remote_tar}")
 
             env_content = (
                 f"FREQTRADE__EXCHANGE__KEY={env.get('FREQTRADE__EXCHANGE__KEY', '')}\n"
@@ -392,6 +401,10 @@ def main() -> None:
                 run_remote(client, f"systemctl enable --now {service_name}")
 
             if not args.no_monitor:
+                monitor_exec = (
+                    f"{deploy_dir}/.venv/bin/python "
+                    f"{deploy_dir}/scripts/valuescan_monitor_api.py"
+                )
                 monitor_service = "\n".join(
                     [
                         "[Unit]",
@@ -402,10 +415,10 @@ def main() -> None:
                         "[Service]",
                         "Type=simple",
                         f"WorkingDirectory={deploy_dir}",
-                        f"ExecStart={deploy_dir}/.venv/bin/python {deploy_dir}/scripts/valuescan_monitor_api.py",
+                        f"ExecStart={monitor_exec}",
                         f"Environment=MONITOR_PORT={monitor_port}",
                         f"Environment=MONITOR_SYMBOL={monitor_symbol}",
-                        f"Environment=MONITOR_REFRESH=15",
+                        "Environment=MONITOR_REFRESH=15",
                         f"Environment=MONITOR_STATE_FILES={monitor_state_files}",
                         "Restart=on-failure",
                         "RestartSec=5",

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# ruff: noqa: RUF002
 """
 ValuScan 数据 API 服务器
 简单的 Flask API，提供 ValuScan 数据访问接口
 """
 import os
+
+from client import get_client
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from client import ValuScanClient, get_client
+
 
 app = Flask(__name__)
 CORS(app)
@@ -317,4 +319,6 @@ def index():
 
 if __name__ == '__main__':
     print(f"Starting ValuScan Data API on port {API_PORT}")
-    app.run(host='0.0.0.0', port=API_PORT, debug=True)
+    host = os.getenv("VALUESCAN_API_HOST", "127.0.0.1")
+    debug = os.getenv("VALUESCAN_API_DEBUG", "0") == "1"
+    app.run(host=host, port=API_PORT, debug=debug)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -33,13 +33,13 @@ def _load_tuners(paths: Iterable[str]) -> list[ValueScanAITuner]:
     return tuners
 
 
-def _sum_stats(stats: Dict[str, Any]) -> tuple[int, int]:
+def _sum_stats(stats: dict[str, Any]) -> tuple[int, int]:
     wins = int(stats.get("wins", 0))
     losses = int(stats.get("losses", 0))
     return wins, losses
 
 
-def _extract_tuned_params(state: Dict[str, Any]) -> int:
+def _extract_tuned_params(state: dict[str, Any]) -> int:
     segments = state.get("segments") or {}
     keys: set[str] = set()
     for segment in segments.values():
@@ -70,7 +70,7 @@ def _load_iteration_stats() -> dict[str, Any]:
         summary = tuner.get_segment_summary(DEFAULT_SEGMENT)
         total_wins += summary["wins"]
         total_losses += summary["losses"]
-        tuned_params = max(tuned_params, _extract_tuned_params(tuner._state))  # noqa: SLF001
+        tuned_params = max(tuned_params, _extract_tuned_params(tuner._state))
         if summary.get("updated_at"):
             updated_at = summary.get("updated_at")
 
@@ -124,5 +124,6 @@ def monitor() -> JSONResponse:
 if __name__ == "__main__":
     import uvicorn
 
+    host = os.getenv("MONITOR_HOST", "127.0.0.1")
     port = int(os.getenv("MONITOR_PORT", "9010"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host=host, port=port)
