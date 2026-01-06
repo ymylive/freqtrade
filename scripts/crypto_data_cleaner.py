@@ -234,32 +234,68 @@ class CryptoDataCleaner:
         trades: pd.DataFrame,
         *,
         timeframe: str = "1min",
+        window: str = "60min",
+        min_periods: int = 20,
     ) -> pd.DataFrame:
         df = trades[trades.get("is_whale", False)].copy()
         if df.empty:
             return pd.DataFrame(
                 columns=[
                     "timestamp",
+                    "symbol",
                     "whale_notional",
                     "whale_net_notional",
                     "whale_trade_count",
                     "whale_buy_ratio",
+                    "whale_notional_z",
+                    "whale_net_z",
                 ]
             )
-        df = df.set_index("timestamp").sort_index()
-        df["buy_notional"] = np.where(df["side"] == "buy", df["notional"], 0.0)
-        df["sell_notional"] = np.where(df["side"] == "sell", df["notional"], 0.0)
-        bucket = df.resample(timeframe).agg(
-            whale_notional=("notional", "sum"),
-            whale_trade_count=("notional", "count"),
-            whale_buy_notional=("buy_notional", "sum"),
-            whale_sell_notional=("sell_notional", "sum"),
-        )
-        total = bucket["whale_buy_notional"] + bucket["whale_sell_notional"]
-        bucket["whale_net_notional"] = bucket["whale_buy_notional"] - bucket["whale_sell_notional"]
-        bucket["whale_buy_ratio"] = np.where(total > 0, bucket["whale_buy_notional"] / total, 0.0)
-        bucket = bucket.drop(columns=["whale_buy_notional", "whale_sell_notional"])
-        return bucket.reset_index()
+        frames: list[pd.DataFrame] = []
+        if "symbol" in df.columns:
+            grouped = df.groupby("symbol", sort=False)
+        else:
+            grouped = [(None, df)]
+
+        for symbol, chunk in grouped:
+            work = chunk.set_index("timestamp").sort_index()
+            work["buy_notional"] = np.where(work["side"] == "buy", work["notional"], 0.0)
+            work["sell_notional"] = np.where(work["side"] == "sell", work["notional"], 0.0)
+            bucket = work.resample(timeframe).agg(
+                whale_notional=("notional", "sum"),
+                whale_trade_count=("notional", "count"),
+                whale_buy_notional=("buy_notional", "sum"),
+                whale_sell_notional=("sell_notional", "sum"),
+            )
+            total = bucket["whale_buy_notional"] + bucket["whale_sell_notional"]
+            bucket["whale_net_notional"] = (
+                bucket["whale_buy_notional"] - bucket["whale_sell_notional"]
+            )
+            bucket["whale_buy_ratio"] = np.where(
+                total > 0,
+                bucket["whale_buy_notional"] / total,
+                0.0,
+            )
+            bucket["whale_notional_z"] = self._rolling_mad_z(
+                bucket["whale_notional"],
+                window=window,
+                min_periods=min_periods,
+            )
+            bucket["whale_net_z"] = self._rolling_mad_z(
+                bucket["whale_net_notional"],
+                window=window,
+                min_periods=min_periods,
+            )
+            bucket = bucket.drop(columns=["whale_buy_notional", "whale_sell_notional"])
+            bucket = bucket.reset_index()
+            if symbol is not None:
+                bucket["symbol"] = symbol
+            frames.append(bucket)
+
+        result = pd.concat(frames, ignore_index=True)
+        if "symbol" not in result.columns:
+            result["symbol"] = None
+        return result
 
     def aggregate_retail_fomo(
         self,
@@ -274,58 +310,75 @@ class CryptoDataCleaner:
             return pd.DataFrame(
                 columns=[
                     "timestamp",
+                    "symbol",
                     "retail_notional",
                     "retail_trade_count",
                     "retail_buy_ratio",
                     "fomo_index",
                 ]
             )
-        df = df.set_index("timestamp").sort_index()
-        df["buy_notional"] = np.where(df["side"] == "buy", df["notional"], 0.0)
-        df["sell_notional"] = np.where(df["side"] == "sell", df["notional"], 0.0)
-        bucket = df.resample(timeframe).agg(
-            retail_notional=("notional", "sum"),
-            retail_trade_count=("notional", "count"),
-            retail_buy_notional=("buy_notional", "sum"),
-            retail_sell_notional=("sell_notional", "sum"),
-            retail_price=("price", "last"),
-        )
-        total = bucket["retail_buy_notional"] + bucket["retail_sell_notional"]
-        bucket["retail_buy_ratio"] = np.where(
-            total > 0,
-            bucket["retail_buy_notional"] / total,
-            0.0,
-        )
-        bucket["retail_price_change"] = bucket["retail_price"].pct_change().fillna(0.0)
+        frames: list[pd.DataFrame] = []
+        if "symbol" in df.columns:
+            grouped = df.groupby("symbol", sort=False)
+        else:
+            grouped = [(None, df)]
 
-        volume_z = self._rolling_mad_z(
-            bucket["retail_notional"],
-            window=window,
-            min_periods=min_periods,
-        )
-        count_z = self._rolling_mad_z(
-            bucket["retail_trade_count"].astype("float64"),
-            window=window,
-            min_periods=min_periods,
-        )
-        price_z = self._rolling_mad_z(
-            bucket["retail_price_change"],
-            window=window,
-            min_periods=min_periods,
-        )
+        for symbol, chunk in grouped:
+            work = chunk.set_index("timestamp").sort_index()
+            work["buy_notional"] = np.where(work["side"] == "buy", work["notional"], 0.0)
+            work["sell_notional"] = np.where(work["side"] == "sell", work["notional"], 0.0)
+            bucket = work.resample(timeframe).agg(
+                retail_notional=("notional", "sum"),
+                retail_trade_count=("notional", "count"),
+                retail_buy_notional=("buy_notional", "sum"),
+                retail_sell_notional=("sell_notional", "sum"),
+                retail_price=("price", "last"),
+            )
+            total = bucket["retail_buy_notional"] + bucket["retail_sell_notional"]
+            bucket["retail_buy_ratio"] = np.where(
+                total > 0,
+                bucket["retail_buy_notional"] / total,
+                0.0,
+            )
+            bucket["retail_price_change"] = bucket["retail_price"].pct_change().fillna(0.0)
 
-        bucket["retail_volume_z"] = volume_z
-        bucket["retail_count_z"] = count_z
-        bucket["retail_price_z"] = price_z
+            volume_z = self._rolling_mad_z(
+                bucket["retail_notional"],
+                window=window,
+                min_periods=min_periods,
+            )
+            count_z = self._rolling_mad_z(
+                bucket["retail_trade_count"].astype("float64"),
+                window=window,
+                min_periods=min_periods,
+            )
+            price_z = self._rolling_mad_z(
+                bucket["retail_price_change"],
+                window=window,
+                min_periods=min_periods,
+            )
 
-        def positive(series: pd.Series) -> pd.Series:
-            return np.clip(series, 0.0, None)
-        bucket["fomo_index"] = (
-            0.5 * positive(volume_z)
-            + 0.3 * positive(count_z)
-            + 0.2 * positive(price_z)
-        )
-        return bucket.reset_index()
+            bucket["retail_volume_z"] = volume_z
+            bucket["retail_count_z"] = count_z
+            bucket["retail_price_z"] = price_z
+
+            def positive(series: pd.Series) -> pd.Series:
+                return np.clip(series, 0.0, None)
+
+            bucket["fomo_index"] = (
+                0.5 * positive(volume_z)
+                + 0.3 * positive(count_z)
+                + 0.2 * positive(price_z)
+            )
+            bucket = bucket.reset_index()
+            if symbol is not None:
+                bucket["symbol"] = symbol
+            frames.append(bucket)
+
+        result = pd.concat(frames, ignore_index=True)
+        if "symbol" not in result.columns:
+            result["symbol"] = None
+        return result
 
     def write_freqtrade_parquet(
         self,

@@ -72,9 +72,16 @@ def _read_input(path: Path) -> pd.DataFrame:
 def _write_latest_report(frame: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if frame.empty:
-        payload = {}
+        payload: dict[str, dict[str, object]] = {}
     else:
-        payload = frame.iloc[-1].to_dict()
+        payload = {}
+        if "symbol" in frame.columns:
+            for symbol, chunk in frame.groupby("symbol", sort=False):
+                if chunk.empty:
+                    continue
+                payload[str(symbol)] = chunk.iloc[-1].to_dict()
+        else:
+            payload["__all__"] = frame.iloc[-1].to_dict()
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
@@ -121,7 +128,12 @@ def main() -> None:
     if not retail_trades.empty:
         _write_symbol_parquet(retail_trades, retail_dir, "retail")
 
-    whale_flow = cleaner.aggregate_whale_flow(whale_trades, timeframe=args.timeframe)
+    whale_flow = cleaner.aggregate_whale_flow(
+        whale_trades,
+        timeframe=args.timeframe,
+        window=args.window,
+        min_periods=args.min_periods,
+    )
     retail_fomo = cleaner.aggregate_retail_fomo(
         retail_trades,
         timeframe=args.timeframe,
@@ -141,6 +153,10 @@ def main() -> None:
         compression="snappy",
         index=False,
     )
+    if not whale_flow.empty:
+        _write_symbol_parquet(whale_flow, metrics_dir, f"whale-flow-{args.timeframe}")
+    if not retail_fomo.empty:
+        _write_symbol_parquet(retail_fomo, metrics_dir, f"retail-fomo-{args.timeframe}")
 
     report_dir = Path(args.report_dir) / args.exchange
     report_dir.mkdir(parents=True, exist_ok=True)

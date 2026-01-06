@@ -214,6 +214,8 @@ def build_payload_tarball(dest: Path) -> None:
     monitor_script = ROOT / "scripts" / "ccxt_monitor_api.py"
     replay_script = ROOT / "scripts" / "ai_iteration_replay.py"
     trade_etl_script = ROOT / "scripts" / "etl_prepare_trade_data.py"
+    anomaly_script = ROOT / "scripts" / "anomaly_monitor.py"
+    telegram_script = ROOT / "scripts" / "telegram_notify.py"
 
     for path in [
         *strategy_files,
@@ -221,6 +223,8 @@ def build_payload_tarball(dest: Path) -> None:
         monitor_script,
         replay_script,
         trade_etl_script,
+        anomaly_script,
+        telegram_script,
     ]:
         if not path.exists():
             raise RuntimeError(f"Missing required file: {path}")
@@ -234,6 +238,8 @@ def build_payload_tarball(dest: Path) -> None:
         tar.add(monitor_script, arcname="scripts/ccxt_monitor_api.py")
         tar.add(replay_script, arcname="scripts/ai_iteration_replay.py")
         tar.add(trade_etl_script, arcname="scripts/etl_prepare_trade_data.py")
+        tar.add(anomaly_script, arcname="scripts/anomaly_monitor.py")
+        tar.add(telegram_script, arcname="scripts/telegram_notify.py")
 
 
 def write_remote_file(
@@ -331,6 +337,8 @@ def main() -> None:  # noqa: C901
     monitor_retail_report = env.get("MONITOR_RETAIL_FOMO_REPORT", "")
     cornna_domain = env.get("CORNNA_DOMAIN", "cornna.dpdns.org")
     cornna_web_root = env.get("CORNNA_WEB_ROOT", "/var/www/cornna")
+    anomaly_enable = env.get("ANOMALY_ENABLE", "0") == "1"
+    anomaly_config = env.get("ANOMALY_CONFIG", "user_data/anomaly/anomaly_config.json")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tar_path = Path(tmpdir) / "freqtrade_payload.tar.gz"
@@ -515,6 +523,39 @@ def main() -> None:  # noqa: C901
                 )
                 run_remote(client, "nginx -t")
                 run_remote(client, "systemctl reload nginx")
+
+            if anomaly_enable:
+                anomaly_exec = (
+                    f"{deploy_dir}/.venv/bin/python "
+                    f"{deploy_dir}/scripts/anomaly_monitor.py --config {anomaly_config}"
+                )
+                anomaly_service = "\n".join(
+                    [
+                        "[Unit]",
+                        "Description=Cornna Anomaly Monitor",
+                        "After=network-online.target",
+                        "Wants=network-online.target",
+                        "",
+                        "[Service]",
+                        "Type=simple",
+                        f"WorkingDirectory={deploy_dir}",
+                        f"ExecStart={anomaly_exec}",
+                        "Restart=on-failure",
+                        "RestartSec=5",
+                        "",
+                        "[Install]",
+                        "WantedBy=multi-user.target",
+                        "",
+                    ]
+                )
+                write_remote_file(
+                    sftp,
+                    "/etc/systemd/system/cornna-anomaly.service",
+                    anomaly_service,
+                    mode=0o644,
+                )
+                run_remote(client, "systemctl daemon-reload")
+                run_remote(client, "systemctl enable --now cornna-anomaly")
         finally:
             sftp.close()
             client.close()

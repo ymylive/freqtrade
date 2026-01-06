@@ -1,0 +1,46 @@
+{
+  "exchange": "binance",
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT"
+  ],
+  "alpha": {
+    "cache_file": "user_data/anomaly/binance_alpha_cache.json",
+    "refresh_minutes": 60
+  },
+  "data_sources": {
+    "whale_report": "user_data/etl/reports/binance/whale-flow-latest.json",
+    "retail_report": "user_data/etl/reports/binance/retail-fomo-latest.json"
+  },
+  "market": {
+    "timeframe": "5m",
+    "limit": 120,
+    "momentum_bars": 12
+  },
+  "thresholds": {
+    "whale_z": 2.5,
+    "fomo_index": 1.5,
+    "retail_buy_ratio": 0.7,
+    "price_momentum": 0.02,
+    "volume_z": 2.0
+  },
+  "telegram": {
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "ai_report": {
+    "api_url": "https://chat.cornna.xyz/gemini/v1/chat/completions",
+    "api_key": "",
+    "model": "gemini-1.5-pro",
+    "language": "zh"
+  },
+  "runtime": {
+    "poll_seconds": 60,
+    "alert_cooldown_seconds": 300,
+    "report_interval_minutes": 20,
+    "state_file": "user_data/anomaly/anomaly_state.json",
+    "report_state_file": "user_data/anomaly/report_state.json",
+    "reports_dir": "user_data/anomaly/reports",
+    "log_file": "user_data/anomaly/anomaly_log.jsonl"
+  }
+}
