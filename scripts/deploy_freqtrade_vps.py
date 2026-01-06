@@ -211,6 +211,7 @@ def build_payload_tarball(dest: Path) -> None:
         ROOT / "user_data" / "config_ccxt_main.json",
         ROOT / "user_data" / "config_ccxt_alt.json",
     ]
+    anomaly_config_example = ROOT / "config_examples" / "anomaly_monitor.json"
     monitor_script = ROOT / "scripts" / "ccxt_monitor_api.py"
     replay_script = ROOT / "scripts" / "ai_iteration_replay.py"
     trade_etl_script = ROOT / "scripts" / "etl_prepare_trade_data.py"
@@ -220,6 +221,7 @@ def build_payload_tarball(dest: Path) -> None:
     for path in [
         *strategy_files,
         *config_files,
+        anomaly_config_example,
         monitor_script,
         replay_script,
         trade_etl_script,
@@ -235,6 +237,7 @@ def build_payload_tarball(dest: Path) -> None:
             tar.add(strategy_file, arcname=f"user_data/strategies/{strategy_file.name}")
         for config_file in config_files:
             tar.add(config_file, arcname=f"user_data/{config_file.name}")
+        tar.add(anomaly_config_example, arcname="config_examples/anomaly_monitor.json")
         tar.add(monitor_script, arcname="scripts/ccxt_monitor_api.py")
         tar.add(replay_script, arcname="scripts/ai_iteration_replay.py")
         tar.add(trade_etl_script, arcname="scripts/etl_prepare_trade_data.py")
@@ -339,6 +342,11 @@ def main() -> None:  # noqa: C901
     cornna_web_root = env.get("CORNNA_WEB_ROOT", "/var/www/cornna")
     anomaly_enable = env.get("ANOMALY_ENABLE", "0") == "1"
     anomaly_config = env.get("ANOMALY_CONFIG", "user_data/anomaly/anomaly_config.json")
+    anomaly_config_target = (
+        anomaly_config
+        if anomaly_config.startswith("/")
+        else f"{deploy_dir}/{anomaly_config.lstrip('/')}"
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tar_path = Path(tmpdir) / "freqtrade_payload.tar.gz"
@@ -402,6 +410,17 @@ def main() -> None:  # noqa: C901
                 f"FREQTRADE__EXCHANGE__SECRET={env.get('FREQTRADE__EXCHANGE__SECRET', '')}\n"
             )
             write_remote_file(sftp, f"{deploy_dir}/.env", env_content, mode=0o600)
+
+            if anomaly_enable:
+                config_dir = anomaly_config_target.rsplit("/", maxsplit=1)[0]
+                run_remote(client, f"mkdir -p {shlex.quote(config_dir)}")
+                run_remote(
+                    client,
+                    "if [ ! -f {target} ]; then cp {source} {target}; fi".format(
+                        target=shlex.quote(anomaly_config_target),
+                        source=shlex.quote(f"{deploy_dir}/config_examples/anomaly_monitor.json"),
+                    ),
+                )
 
             for config_path in config_paths:
                 service_name = service_name_from_config(config_path)
