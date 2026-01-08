@@ -157,7 +157,12 @@ class CryptoDataCleaner:
         if df.empty:
             return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
         data = df.copy()
-        data["date"] = data["ts_ms"].astype("int64")
+        if "ts_ms" in data.columns:
+            data["date"] = data["ts_ms"].astype("int64")
+        elif data.index.name == "ts_ms":
+            data["date"] = data.index.astype("int64")
+        else:
+            data["date"] = data["timestamp"].astype("int64")
         return data.loc[:, ["date", "open", "high", "low", "close", "volume"]]
 
     def clean_trades(
