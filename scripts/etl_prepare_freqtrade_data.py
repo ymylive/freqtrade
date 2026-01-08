@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-
 from crypto_data_cleaner import CryptoDataCleaner
 
 
@@ -55,6 +54,47 @@ def _read_input(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported input format: {path}")
 
 
+def _infer_symbol_from_path(path: Path) -> str | None:
+    name = path.stem
+    parts = name.split("-")
+    if len(parts) >= 2:
+        tail = parts[-1].lower()
+        candle_types = {"spot", "futures", "mark", "index", "premiumindex", "funding_rate"}
+        if tail in candle_types:
+            parts = parts[:-1]
+        if parts:
+            last = parts[-1]
+            if last.endswith(("m", "h", "d", "w")) and any(ch.isdigit() for ch in last):
+                parts = parts[:-1]
+    base = "-".join(parts)
+    if not base:
+        return None
+    tokens = base.split("_")
+    if len(tokens) >= 3:
+        base_asset = tokens[0]
+        quote = tokens[1]
+        settle = tokens[2]
+        return f"{base_asset}/{quote}:{settle}"
+    if len(tokens) == 2:
+        return f"{tokens[0]}/{tokens[1]}"
+    return None
+
+
+def _normalize_ohlcv_frame(df: pd.DataFrame, *, path: Path) -> pd.DataFrame:
+    frame = df.copy()
+    if "symbol" not in frame.columns:
+        symbol = _infer_symbol_from_path(path)
+        if symbol:
+            frame["symbol"] = symbol
+    if "timestamp" not in frame.columns and "date" in frame.columns:
+        series = frame["date"]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            frame["timestamp"] = (series.astype("int64") // 1_000_000).astype("int64")
+        else:
+            frame["timestamp"] = pd.to_numeric(series, errors="coerce")
+    return frame
+
+
 def main() -> None:
     args = parse_args()
     input_paths = [Path(item.strip()) for item in args.input.split(",") if item.strip()]
@@ -65,7 +105,7 @@ def main() -> None:
     for path in input_paths:
         if not path.exists():
             raise FileNotFoundError(path)
-        raw_frames.append(_read_input(path))
+        raw_frames.append(_normalize_ohlcv_frame(_read_input(path), path=path))
     raw = pd.concat(raw_frames, ignore_index=True)
 
     cleaner = CryptoDataCleaner(args.exchange)
