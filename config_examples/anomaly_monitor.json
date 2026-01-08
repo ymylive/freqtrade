@@ -29,16 +29,16 @@
     "chat_id": ""
   },
   "ai_report": {
-    "api_url": "https://chat.cornna.xyz/chatgpt/v1/chat/completions",
+    "api_url": "https://chat.cornna.xyz/gemini/v1/chat/completions",
     "api_key": "",
-    "model": "gpt-5.2",
+    "model": "gemini-3-flash-preview-search",
     "language": "zh"
   },
   "ai_review": {
     "enabled": true,
-    "api_url": "https://chat.cornna.xyz/chatgpt/v1/chat/completions",
+    "api_url": "https://chat.cornna.xyz/gemini/v1/chat/completions",
     "api_key": "",
-    "model": "gpt-5.2",
+    "model": "gemini-3-flash-preview-search",
     "language": "zh",
     "min_severity": "info",
     "min_confidence": 0.6,
