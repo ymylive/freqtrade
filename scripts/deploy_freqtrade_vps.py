@@ -215,6 +215,7 @@ def build_payload_tarball(dest: Path) -> None:
     monitor_script = ROOT / "scripts" / "ccxt_monitor_api.py"
     replay_script = ROOT / "scripts" / "ai_iteration_replay.py"
     trade_etl_script = ROOT / "scripts" / "etl_prepare_trade_data.py"
+    ohlcv_etl_script = ROOT / "scripts" / "etl_prepare_freqtrade_data.py"
     anomaly_script = ROOT / "scripts" / "anomaly_monitor.py"
     telegram_script = ROOT / "scripts" / "telegram_notify.py"
     strategy_iter_script = ROOT / "scripts" / "ai_strategy_iterate.py"
@@ -226,6 +227,7 @@ def build_payload_tarball(dest: Path) -> None:
         monitor_script,
         replay_script,
         trade_etl_script,
+        ohlcv_etl_script,
         strategy_iter_script,
         anomaly_script,
         telegram_script,
@@ -243,6 +245,7 @@ def build_payload_tarball(dest: Path) -> None:
         tar.add(monitor_script, arcname="scripts/ccxt_monitor_api.py")
         tar.add(replay_script, arcname="scripts/ai_iteration_replay.py")
         tar.add(trade_etl_script, arcname="scripts/etl_prepare_trade_data.py")
+        tar.add(ohlcv_etl_script, arcname="scripts/etl_prepare_freqtrade_data.py")
         tar.add(strategy_iter_script, arcname="scripts/ai_strategy_iterate.py")
         tar.add(anomaly_script, arcname="scripts/anomaly_monitor.py")
         tar.add(telegram_script, arcname="scripts/telegram_notify.py")
